@@ -5,15 +5,24 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-# Refusals grouped by what a miner should do, because the advice differs sharply.
-RETRY_UNCHANGED = frozenset({"SUBMISSIONS_PAUSED"})
-RETRY_AFTER_WAITING = frozenset({"PAYMENT_NOT_FINALIZED"})
-NEVER_RETRY = frozenset({"DUPLICATE_PROOF", "DUPLICATE_PAYMENT", "IDEMPOTENCY_CONFLICT"})
-
+# What to do about a refusal, keyed by the validator's reason code. Each entry says whether the
+# payment survived, because that is the only question that costs money to get wrong.
 ADVICE: Mapping[str, str] = {
     "PAYMENT_NOT_FINALIZED": (
         "Wait for the transfer to finalize, then retry with the same idempotency key. "
         "Check the recipient, the amount, and that your coldkey owns this hotkey."
+    ),
+    "PAYMENT_REFERENCE_AMBIGUOUS": (
+        "That extrinsic moved TAO more than once, so it does not name one payment. Retry with the "
+        "three-part `block-extrinsic-event` reference from the detail; the payment is untouched."
+    ),
+    "PAYMENT_VERIFIER_UNAVAILABLE": (
+        "The validator could not read the chain. Nothing was spent -- retry with the same "
+        "idempotency key."
+    ),
+    "TRANSFER_ALREADY_CREDITED": (
+        "That transfer was credited to an account as credits, so it can never fund a submission. "
+        "Spend the credit instead."
     ),
     "SIGNATURE_INVALID": "Check that the signing hotkey is the one in the bundle manifest.",
     "TASK_NOT_ALLOWED": (
@@ -27,7 +36,11 @@ ADVICE: Mapping[str, str] = {
     "DUPLICATE_PROOF": "These proof bytes were already submitted. Nothing to retry.",
     "DUPLICATE_PAYMENT": "This payment already funded a submission. Nothing to retry.",
     "IDEMPOTENCY_CONFLICT": "That key belongs to a different submission. Build a new one.",
-    "SUBMISSIONS_PAUSED": "The validator is not accepting work. Try again after the pause.",
+    "SUBMISSIONS_PAUSED": (
+        "The validator is not accepting work; `conjectures status` says why. Nothing was spent -- "
+        "retry with the same idempotency key."
+    ),
+    "RATE_LIMITED": "Too many requests. Wait out `Retry-After`, then retry with the same key.",
     "SUBMISSION_POLICY_VIOLATION": "The proof uses something the policy forbids; see the detail.",
 }
 
@@ -57,17 +70,15 @@ class ApiError(CliError):
         status_code: int,
         reason_code: str | None = None,
         detail: Mapping[str, Any] | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message, hint=ADVICE.get(reason_code or ""))
         self.status_code = status_code
         self.reason_code = reason_code
         self.detail = dict(detail or {})
-
-    @property
-    def retryable(self) -> bool:
-        if self.reason_code in NEVER_RETRY:
-            return False
-        return self.reason_code in RETRY_UNCHANGED | RETRY_AFTER_WAITING or self.status_code >= 500
+        # Set only when the validator asked for a pause -- a rate limit, or something transient.
+        # Its presence is what tells a poller to wait rather than to give up.
+        self.retry_after = retry_after
 
 
 class TransportError(CliError):
@@ -76,10 +87,13 @@ class TransportError(CliError):
     exit_code = 4
 
 
-def api_error(status_code: int, body: object) -> ApiError:
+def api_error(status_code: int, body: object, retry_after: str | None = None) -> ApiError:
     """Build an ApiError from an RFC 9457 problem document, or from whatever arrived instead."""
+    delay = _seconds(retry_after)
     if not isinstance(body, Mapping):
-        return ApiError(f"validator returned HTTP {status_code}", status_code=status_code)
+        return ApiError(
+            f"validator returned HTTP {status_code}", status_code=status_code, retry_after=delay
+        )
     reason_code = body.get("reason_code")
     message = body.get("detail") or body.get("title") or f"validator returned HTTP {status_code}"
     envelope = {"type", "title", "status", "detail", "reason_code"}
@@ -88,4 +102,13 @@ def api_error(status_code: int, body: object) -> ApiError:
         status_code=status_code,
         reason_code=str(reason_code) if reason_code else None,
         detail={key: value for key, value in body.items() if key not in envelope},
+        retry_after=delay,
     )
+
+
+def _seconds(retry_after: str | None) -> float | None:
+    """`Retry-After` as a delay. The HTTP-date form is ignored: this API sends delta-seconds."""
+    try:
+        return max(0.0, float(retry_after or ""))
+    except ValueError:
+        return None

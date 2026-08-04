@@ -127,7 +127,9 @@ class ApiClient:
             raise TransportError(f"could not reach {self._http.base_url}: {exc}") from exc
 
         if response.status_code >= 400:
-            raise api_error(response.status_code, _body(response))
+            raise api_error(
+                response.status_code, _body(response), response.headers.get("retry-after")
+            )
         try:
             return model.model_validate(_body(response))
         except ValidationError as exc:

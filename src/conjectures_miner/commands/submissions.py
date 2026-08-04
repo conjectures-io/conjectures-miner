@@ -80,7 +80,15 @@ def _watch(
         app_ctx.render.note(f"{status.verification_status}; checking again in {delay:.0f}s")
         time.sleep(delay)
         delay = min(delay * POLL_BACKOFF, POLL_MAX_SECONDS)
-        status = _read(app_ctx, submission_id)
+        try:
+            status = _read(app_ctx, submission_id)
+        except ApiError as exc:
+            if exc.retry_after is None:
+                raise
+            # A rate limit or a transient refusal. It says nothing about the submission, so wait
+            # as long as it asked and keep watching rather than reporting a failure.
+            delay = max(delay, exc.retry_after)
+            app_ctx.render.note(exc.message)
     return status
 
 

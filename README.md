@@ -18,9 +18,14 @@ conjectures check                            # free, unauthenticated, no key unl
 
 #   pay 0.5 TAO from your coldkey to the payment_recipient, and wait for finality
 
-conjectures submit --payment-ref <extrinsic>
+conjectures submit --payment-ref 4821993-2-1
 conjectures submissions show <id> --watch
 ```
+
+A payment reference is a **position**, `block-extrinsic` or `block-extrinsic-event` — not an
+extrinsic hash. A node can resolve a position; resolving a hash is an indexer's job, so the
+validator cannot confirm a payment from one. If the extrinsic moved TAO more than once, name the
+event index too; the validator will tell you which references to choose between.
 
 `build` writes two files and is fully offline:
 

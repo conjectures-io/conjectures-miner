@@ -9,6 +9,10 @@ from typing import Any
 
 import pytest
 from pytest_httpx import HTTPXMock
+from typer.testing import CliRunner
+
+from conjectures_miner import digest, plan
+from conjectures_miner.cli import app
 from tests.conftest import (
     API,
     HOTKEY,
@@ -18,16 +22,14 @@ from tests.conftest import (
     read_manifest,
     task_list_response,
 )
-from typer.testing import CliRunner
-
-from conjectures_miner import digest, plan
-from conjectures_miner.cli import app
 
 runner = CliRunner()
 # `//Alice` resolves to HOTKEY, and the guard permits a development key against a local API only.
 ALICE = ["--uri", "//Alice"]
 # Explicit, because `auto` renders a table whenever rich thinks it is looking at a terminal.
 JSON = ["--output", "json"]
+# A real reference is a position, `block-extrinsic[-event]`, not an extrinsic hash.
+PAYMENT = "4821993-2-1"
 
 
 def invoke(*args: str) -> Any:
@@ -62,7 +64,7 @@ def submission_response(submission_id: str) -> dict:
         "manual_review_required": True,
         "review_policy_version": "v1",
         "payment": {
-            "reference": "0x1234:5",
+            "reference": PAYMENT,
             "sender": HOTKEY,
             "amount_rao": 500_000_000,
             "block": 42,
@@ -165,7 +167,7 @@ def test_submit_signs_the_canonical_request_digest(built: tuple[Path, Path], htt
         url=f"{API}/v1/submissions", status_code=201, json=submission_response(submission_id)
     )
 
-    sent = succeed(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "0x1234:5", "--yes")
+    sent = succeed(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
     assert sent["submission_id"] == submission_id
 
     request = httpx_mock.get_request()
@@ -176,7 +178,7 @@ def test_submit_signs_the_canonical_request_digest(built: tuple[Path, Path], htt
         task_id=TASK_ID,
         task_bundle_sha256=TASK_DIGEST,
         proof_sha256=digest.sha256_prefixed(PROOF),
-        payment_reference="0x1234:5",
+        payment_reference=PAYMENT,
         idempotency_key=request.headers["Idempotency-Key"],
     )
     assert _verifies(request.headers["X-Conjectures-Signature"], digest.to_bytes(expected))
@@ -192,36 +194,109 @@ def test_the_idempotency_key_is_persisted_before_the_request_goes_out(
         status_code=503,
         json={"reason_code": "SUBMISSIONS_PAUSED", "detail": "submissions are paused"},
     )
-    error = refusal(
-        *ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "0x1234:5", "--yes"
-    )
+    error = refusal(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
     assert getattr(error, "reason_code", None) == "SUBMISSIONS_PAUSED"
 
     records = list((isolated_home / "state").glob("*.json"))
     assert len(records) == 1
     stored = json.loads(records[0].read_text())
-    assert stored["payment_reference"] == "0x1234:5"
+    assert stored["payment_reference"] == PAYMENT
     assert stored["submission_id"] is None
 
 
 def test_a_retry_reuses_the_stored_key(built: tuple[Path, Path], httpx_mock: HTTPXMock):
     _, plan_path = built
     httpx_mock.add_response(url=f"{API}/v1/submissions", status_code=500, json={})
-    refusal(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "0x1234:5", "--yes")
+    refusal(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
 
     httpx_mock.add_response(
         url=f"{API}/v1/submissions", status_code=200, json=submission_response(str(uuid.uuid4()))
     )
-    succeed(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "0x1234:5", "--yes")
+    succeed(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
 
     keys = {request.headers["Idempotency-Key"] for request in httpx_mock.get_requests()}
     assert len(keys) == 1
 
 
+def test_a_reference_no_node_could_resolve_is_refused_before_the_key_is_unlocked(
+    built: tuple[Path, Path], httpx_mock: HTTPXMock
+):
+    _, plan_path = built
+    # Pasted from a block explorer, spaces and all.
+    error = refusal(
+        *ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "4821993 2 1", "--yes"
+    )
+    assert "is not a payment reference" in str(error)
+    assert getattr(error, "exit_code", None) == 2
+    assert not httpx_mock.get_requests()
+
+
+def test_a_development_reference_warns_but_still_goes_out(
+    built: tuple[Path, Path], httpx_mock: HTTPXMock
+):
+    _, plan_path = built
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions", status_code=201, json=submission_response(str(uuid.uuid4()))
+    )
+    result = invoke(
+        *ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "dev-payment-1", "--yes"
+    )
+    assert result.exit_code == 0
+    assert "only a development validator" in result.stderr
+    request = httpx_mock.get_request()
+    assert request is not None
+    assert request.headers["X-Conjectures-Payment-Ref"] == "dev-payment-1"
+
+
+def test_the_reference_the_validator_recorded_is_reported_back(
+    built: tuple[Path, Path], httpx_mock: HTTPXMock
+):
+    """The validator stores the canonical three-part identity of a two-part reference."""
+    _, plan_path = built
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions", status_code=201, json=submission_response(str(uuid.uuid4()))
+    )
+    sent = succeed(
+        *ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "4821993-2", "--yes"
+    )
+    assert sent["payment_reference"] == PAYMENT
+
+    request = httpx_mock.get_request()
+    assert request is not None
+    # What was signed is what was typed. The canonical form is the validator's answer, not an
+    # input, so it must not leak into the digest.
+    assert request.headers["X-Conjectures-Payment-Ref"] == "4821993-2"
+
+
+def test_watching_waits_out_a_rate_limit_instead_of_failing(
+    httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+):
+    submission_id = str(uuid.uuid4())
+    settled = submission_response(submission_id) | {"verification_status": "VERIFIED"}
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions/{submission_id}", json=submission_response(submission_id)
+    )
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions/{submission_id}",
+        status_code=429,
+        headers={"Retry-After": "90"},
+        json={"reason_code": "RATE_LIMITED", "detail": "request rate exceeded"},
+    )
+    httpx_mock.add_response(url=f"{API}/v1/submissions/{submission_id}", json=settled)
+
+    slept: list[float] = []
+    monkeypatch.setattr("conjectures_miner.commands.submissions.time.sleep", slept.append)
+    watched = succeed(*ALICE, "submissions", "show", submission_id, "--watch")
+
+    assert watched["verification_status"] == "VERIFIED"
+    # The interval the validator asked for, honoured over the client's own backoff.
+    assert slept[-1] == 90.0
+
+
 def test_submit_refuses_when_the_archive_commits_to_another_hotkey(built: tuple[Path, Path]):
     _, plan_path = built
     error = refusal(
-        "--uri", "//Bob", "submit", "--plan", str(plan_path), "--payment-ref", "0x1", "--yes"
+        "--uri", "//Bob", "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes"
     )
     assert "is signing" in str(error)
 
@@ -236,7 +311,7 @@ def test_a_development_key_is_refused_against_a_remote_validator(
 ):
     _, plan_path = built
     monkeypatch.setenv("CONJECTURES_API_BASE_URL", "https://api.conjectures.io")
-    error = refusal(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "0x1", "--yes")
+    error = refusal(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
     assert "development key" in str(error)
 
 
@@ -245,7 +320,7 @@ def test_build_refuses_to_discard_a_payment_a_plan_already_carries(
 ):
     _, plan_path = built
     paid = plan.read(plan_path)
-    paid.payment.reference = "0x1234:5"
+    paid.payment.reference = PAYMENT
     plan.write(plan_path, paid)
 
     error = refusal(
@@ -275,9 +350,7 @@ def test_an_api_refusal_carries_the_reason_code_and_the_advice(
         status_code=404,
         json={"reason_code": "TASK_NOT_ALLOWED", "detail": "task is not allowed"},
     )
-    error = refusal(
-        *ALICE, "submit", "--plan", str(plan_path), "--payment-ref", "0x1234:5", "--yes"
-    )
+    error = refusal(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
     assert getattr(error, "reason_code", None) == "TASK_NOT_ALLOWED"
     assert "was not consumed" in (getattr(error, "hint", "") or "")
 

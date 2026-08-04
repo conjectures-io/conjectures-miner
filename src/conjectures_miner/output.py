@@ -21,7 +21,9 @@ from conjectures_miner.errors import ApiError, CliError
 class Renderer:
     def __init__(self, output_format: str = "auto", *, console: Console | None = None) -> None:
         self._out = console or Console()
-        self._err = Console(stderr=True)
+        # `soft_wrap`: notes carry commands to copy, and a hard wrap at the console width puts a
+        # newline in the middle of one.
+        self._err = Console(stderr=True, soft_wrap=True)
         resolved = output_format
         if resolved == "auto":
             resolved = "table" if self._out.is_terminal else "json"
@@ -41,8 +43,8 @@ class Renderer:
             self._table(payload, title, self._err)
 
     def note(self, message: str) -> None:
-        if not self._json:
-            self._err.print(message)
+        """A warning or a progress line. Stderr even in JSON mode: `| jq` reads stdout only."""
+        self._err.print(message)
 
     def failure(self, error: BaseException) -> None:
         if self._json:

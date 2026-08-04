@@ -21,6 +21,7 @@ import typer
 
 from conjectures_miner import __version__
 from conjectures_miner import bundle as bundle_module
+from conjectures_miner import payment as payment_module
 from conjectures_miner import plan as plan_module
 from conjectures_miner.cache import complete_task_id
 from conjectures_miner.commands import context
@@ -170,7 +171,10 @@ def submit(
         Path | None, typer.Option(help="Send a bare archive instead; needs --payment-ref.")
     ] = None,
     payment_ref: Annotated[
-        str | None, typer.Option(help="The payment. Required only if the plan has none.")
+        str | None,
+        typer.Option(
+            help="The payment, as block-extrinsic-event. Required only if the plan has none."
+        ),
     ] = None,
     idempotency_key: Annotated[
         str | None,
@@ -183,15 +187,25 @@ def submit(
     loaded = plan_module.load(plan, bundle)
     archive = loaded.archive
 
-    payment_reference = payment_ref or loaded.payment_reference
-    if payment_reference is None:
+    cited = payment_ref or loaded.payment_reference
+    if cited is None:
         raise CliError(
             "this submission is missing: " + ", ".join(plan_module.missing_for_submit(loaded.plan))
         )
+    payment_reference = payment_module.normalise(cited)
     if payment_ref and loaded.payment_reference and payment_ref != loaded.payment_reference:
         # Silently overriding a recorded payment is how the wrong extrinsic gets cited.
         app_ctx.render.note(
             f"[yellow]--payment-ref overrides the plan's {loaded.payment_reference}[/]"
+        )
+    if not payment_module.is_canonical(payment_reference):
+        # Not fatal: a development validator accepts references from its own allowlist, and
+        # refusing those locally would make this tool unusable against one. A chain-backed
+        # validator can resolve nothing but a position, so on the real network this is about to be
+        # refused as PAYMENT_NOT_FINALIZED.
+        app_ctx.render.note(
+            f"[yellow]{payment_reference} is not a chain position (block-extrinsic-event); "
+            "only a development validator will accept it.[/]"
         )
 
     signer = app_ctx.signer
@@ -245,9 +259,15 @@ def submit(
             "verification_status": status.verification_status,
             "bounty_amount_rao": status.bounty.amount_rao,
             "idempotency_key": record.idempotency_key,
+            "payment_reference": status.payment.reference,
         },
         title="submitted",
     )
+    if status.payment.reference != payment_reference:
+        # The validator stores the transfer's canonical three-part identity, not the two-part
+        # reference a block explorer shows. The local record keeps what was sent, so a retry with
+        # the same `--payment-ref` still finds the same idempotency key.
+        app_ctx.render.note(f"The validator recorded this payment as {status.payment.reference}.")
     app_ctx.render.note(f"Watch it: `conjectures submissions show {status.submission_id} --watch`")
 
 
