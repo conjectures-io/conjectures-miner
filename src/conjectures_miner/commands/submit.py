@@ -2,8 +2,12 @@
 
     build   write the archive and the plan       local, offline, no key unlock
     check   would the validator take this?       free, no auth, no key unlock
-    pay     the submission price                 outside this tool, for now
-    submit  spend the payment                    signed, irreversible
+    pay     the submission price                 coldkey, on chain, irreversible
+    submit  spend the payment                    hotkey-signed, irreversible
+
+`pay` records its reference on the plan, so `--payment-ref` is needed here only for a payment
+made outside this tool. It stays a separate command deliberately: merging the two would make
+every submission failure look like a lost transfer.
 
 A stale task cache is not a hazard here: the validator resolves the task and refuses with
 `TASK_NOT_ALLOWED` before it confirms the payment and before any row reaches `submissions`, and

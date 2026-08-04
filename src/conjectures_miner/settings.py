@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # production refuses the marker.
     dev_signature: bool = False
 
+    # Which Subtensor `conjectures pay` transfers on and reads back from. Only that command and
+    # `pay reference` open a chain connection at all; everything else talks to the validator over
+    # HTTP. A network the SDK knows (`finney`, `test`, `local`) or a websocket endpoint.
+    bittensor_network: str = "finney"
+
     # `cache_dir` is disposable; `state_dir` holds idempotency keys whose loss can cost a
     # payment. Kept apart so one command that clears "the data" cannot take both.
     cache_dir: Path = Field(default_factory=lambda: Path(platformdirs.user_cache_dir(APP_NAME)))

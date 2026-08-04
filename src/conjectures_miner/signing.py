@@ -1,8 +1,13 @@
 """Wallet loading and the headers each authenticated call needs.
 
-The only module that touches key material. Commands ask for headers; they never see a keypair.
+The hotkey half of this tool's key handling. Commands ask for headers; they never see a keypair.
 The coldkey pays and the hotkey signs -- the validator checks on-chain that the paying coldkey
-owns the submitting hotkey, so this tool only ever needs the hotkey.
+owns the submitting hotkey, so everything the validator *authenticates* is signed here, by the
+hotkey alone.
+
+The coldkey is opened in exactly one other place, `chain.load_coldkey_wallet`, and only by
+`conjectures pay`: signing a transfer needs the account that holds the funds. Nothing in this
+module touches it.
 """
 
 from __future__ import annotations

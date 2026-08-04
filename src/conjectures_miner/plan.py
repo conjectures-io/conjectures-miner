@@ -168,6 +168,33 @@ def load(plan_path: Path | None, bundle_override: Path | None) -> Loaded:
     return Loaded(archive=archive, plan=plan, source=plan_path)
 
 
+def record_payment(
+    plan_path: Path, *, reference: str, price_rao: int, recipient: str
+) -> SubmissionPlan:
+    """Write a confirmed payment into the plan, so `submit` needs no `--payment-ref`.
+
+    A plan that already cites a *different* payment is refused rather than overwritten. That
+    plan's reference is the only local record of money that has moved, and replacing it would
+    strand a real transfer with nothing pointing at it.
+    """
+    existing = read(plan_path)
+    if existing.payment.reference not in (None, reference):
+        raise PlanError(
+            f"{plan_path} already cites payment {existing.payment.reference}",
+            hint=f"Overwriting it would strand that transfer. Submit it first, or record "
+            f"{reference} against a different plan with --plan.",
+        )
+    updated = existing.model_copy(
+        update={
+            "payment": PaymentRef(
+                reference=reference, price_rao_seen=price_rao, recipient_seen=recipient
+            )
+        }
+    )
+    write(plan_path, updated)
+    return updated
+
+
 def missing_for_submit(plan: SubmissionPlan | None) -> list[str]:
     """What a plan still lacks, reported all at once rather than one field per attempt."""
     if plan is None or plan.payment.reference is None:
