@@ -1,7 +1,7 @@
 [project]
 name = "conjectures-miner"
 version = "0.1.0"
-description = "Add your description here"
+description = "Miner CLI for the conjectures.io Subnet 66 Lean-proof validator"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -13,6 +13,16 @@ dependencies = [
     "typer>=0.27.1",
 ]
 
+[project.scripts]
+conjectures = "conjectures_miner.cli:app"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conjectures_miner"]
+
 [dependency-groups]
 dev = [
     "pyright>=1.1.411",
@@ -20,3 +30,6 @@ dev = [
     "pytest-httpx>=0.36.2",
     "ruff>=0.16.1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

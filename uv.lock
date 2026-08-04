@@ -183,7 +183,7 @@ wheels = [
 [[package]]
 name = "conjectures-miner"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "bittensor" },
     { name = "httpx" },
