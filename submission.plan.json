@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "format": "conjectures-submission-plan/v1",
+  "bundle": {
+    "path": "submission.zip",
+    "sha256": "sha256:511c5159a3b1e0e1df328704998b4d5296af57a50a2e8b649385f881561c5c30",
+    "bytes": 535
+  },
+  "manifest": {
+    "schema_version": 1,
+    "format": "conjectures-submission/v1",
+    "task_id": "fc-379fc029-erdos89-erdos-89-c956ed476a-formalized-v1",
+    "task_bundle_sha256": "sha256:b00aaf894d6f79297ef2e3ae4cb7cdf6a2370e1ec8442e679791d1274b4c41c3",
+    "proof_path": "Main.lean",
+    "proof_sha256": "sha256:7b55f8e67b5623c4bef3fa691288da9437d79d3aba156de48d481db32ac7d16d",
+    "proof_bytes": 5,
+    "miner_hotkey": "5HKaateUqisy5xb9MWdznsY8AV5JrC3Kbav29YuRuPKpKn4t"
+  },
+  "payment": {
+    "reference": null,
+    "price_rao_seen": 500000000,
+    "recipient_seen": "5Gn2SyG6PmBstAjiPD93CTuxADqYaYqf6fKeFuezKsX7Chf9"
+  },
+  "provenance": {
+    "built_at": "2026-08-04T13:04:38.499099Z",
+    "tool_version": "0.1.0",
+    "task_requested": "fc-379fc029-erdos89-erdos-89-c956ed476a-formalized-v1",
+    "api_base_url": "http://151.243.176.137:8000",
+    "repository_commit": "379fc0298dc146df549e7061c3ede0353a5bb51f",
+    "proof_source": ".python-version"
+  }
+}

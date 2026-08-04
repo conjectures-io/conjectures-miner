@@ -209,6 +209,11 @@ def submit(
         )
 
     signer = app_ctx.signer
+    if app_ctx.settings.dev_signature:
+        app_ctx.render.note(
+            "[yellow]--dev-signature: sending the development marker, not a signature. "
+            "Only a validator outside PROD accepts it, and only for an allowlisted hotkey.[/]"
+        )
     if archive.miner_hotkey != signer.ss58_address:
         raise CliError(
             f"the archive commits to {archive.miner_hotkey} but {signer.ss58_address} is signing",

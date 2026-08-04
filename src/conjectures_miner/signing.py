@@ -8,6 +8,7 @@ owns the submitting hotkey, so this tool only ever needs the hotkey.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -16,6 +17,8 @@ from conjectures_miner.errors import ConfigError
 from conjectures_miner.settings import Settings
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+DEVELOPMENT_MARKER = b"development".ljust(64, b"\x00")
 
 
 class Signer(Protocol):
@@ -27,13 +30,27 @@ class Signer(Protocol):
     def sign(self, message: bytes) -> bytes: ...
 
 
+@dataclass(frozen=True)
+class DevelopmentSigner:
+    """The marker a non-production validator accepts, for a hotkey on its allowlist.
+
+    Holds an address and no key, because the marker is a constant -- so this mode never opens a
+    private key, and what it produces is worthless against a production validator.
+    """
+
+    ss58_address: str
+
+    def sign(self, message: bytes) -> bytes:
+        del message
+        return DEVELOPMENT_MARKER
+
+
 def load_signer(settings: Settings, *, uri: str | None = None) -> Signer:
     """Open a hotkey for signing."""
+    if settings.dev_signature:
+        return DevelopmentSigner(hotkey_address(settings, uri=uri))
     if uri:
-        _assert_local(settings.api_root)
-        from bittensor.sp_core import Keypair
-
-        return Keypair.create_from_uri(uri)
+        return _development_keypair(settings, uri)
     try:
         return _wallet(settings).hotkey
     except Exception as exc:
@@ -50,7 +67,7 @@ def hotkey_address(
     if explicit:
         return explicit
     if uri:
-        return load_signer(settings, uri=uri).ss58_address
+        return _development_keypair(settings, uri).ss58_address
     try:
         return _wallet(settings).hotkeypub.ss58_address
     except Exception as exc:
@@ -100,6 +117,13 @@ def _signed(signer: Signer, message: bytes) -> dict[str, str]:
         "X-Conjectures-Timestamp": str(int(time.time() * 1000)),
         "X-Conjectures-Signature": signer.sign(message).hex(),
     }
+
+
+def _development_keypair(settings: Settings, uri: str):
+    _assert_local(settings.api_root)
+    from bittensor.sp_core import Keypair
+
+    return Keypair.create_from_uri(uri)
 
 
 def _wallet(settings: Settings):  # type: ignore[no-untyped-def] - bittensor ships no stubs

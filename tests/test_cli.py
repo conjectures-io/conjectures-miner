@@ -11,7 +11,7 @@ import pytest
 from pytest_httpx import HTTPXMock
 from typer.testing import CliRunner
 
-from conjectures_miner import digest, plan
+from conjectures_miner import digest, plan, signing
 from conjectures_miner.cli import app
 from tests.conftest import (
     API,
@@ -291,6 +291,48 @@ def test_watching_waits_out_a_rate_limit_instead_of_failing(
     assert watched["verification_status"] == "VERIFIED"
     # The interval the validator asked for, honoured over the client's own backoff.
     assert slept[-1] == 90.0
+
+
+def test_dev_signature_sends_the_marker_and_opens_no_key(
+    built: tuple[Path, Path], httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+):
+    _, plan_path = built
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions", status_code=201, json=submission_response(str(uuid.uuid4()))
+    )
+    # Any attempt to open a private key is the failure this mode exists to avoid.
+    monkeypatch.setattr(
+        "conjectures_miner.signing._wallet", lambda _: pytest.fail("opened a wallet")
+    )
+    succeed(
+        *ALICE,
+        "--dev-signature",
+        "submit",
+        "--plan",
+        str(plan_path),
+        "--payment-ref",
+        PAYMENT,
+        "--yes",
+    )
+
+    request = httpx_mock.get_request()
+    assert request is not None
+    assert bytes.fromhex(request.headers["X-Conjectures-Signature"]) == signing.DEVELOPMENT_MARKER
+    assert request.headers["X-Conjectures-Hotkey"] == HOTKEY
+
+
+def test_the_real_signature_is_what_you_get_without_the_flag(
+    built: tuple[Path, Path], httpx_mock: HTTPXMock
+):
+    _, plan_path = built
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions", status_code=201, json=submission_response(str(uuid.uuid4()))
+    )
+    succeed(*ALICE, "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes")
+
+    request = httpx_mock.get_request()
+    assert request is not None
+    assert bytes.fromhex(request.headers["X-Conjectures-Signature"]) != signing.DEVELOPMENT_MARKER
 
 
 def test_submit_refuses_when_the_archive_commits_to_another_hotkey(built: tuple[Path, Path]):

@@ -24,7 +24,10 @@ ADVICE: Mapping[str, str] = {
         "That transfer was credited to an account as credits, so it can never fund a submission. "
         "Spend the credit instead."
     ),
-    "SIGNATURE_INVALID": "Check that the signing hotkey is the one in the bundle manifest.",
+    "SIGNATURE_INVALID": (
+        "Check that the signing hotkey is the one in the bundle manifest. If this validator runs "
+        "outside PROD it may want the static marker instead: pass --dev-signature."
+    ),
     "TASK_NOT_ALLOWED": (
         "The task pool moved. Run `conjectures tasks sync`, rebuild, and submit again with the "
         "same payment reference -- it was not consumed."

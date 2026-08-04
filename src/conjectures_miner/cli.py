@@ -51,6 +51,13 @@ def main(
         str | None,
         typer.Option(help="Development key such as //Alice. Local validators only."),
     ] = None,
+    dev_signature: Annotated[
+        bool | None,
+        typer.Option(
+            "--dev-signature/--no-dev-signature",
+            help="Send the marker a validator outside PROD expects instead of signing.",
+        ),
+    ] = None,
     output: Annotated[str | None, typer.Option(help="auto | table | json")] = None,
     timeout: Annotated[float | None, typer.Option(help="Request timeout, seconds.")] = None,
     version: Annotated[bool, typer.Option("--version", callback=_version, is_eager=True)] = False,
@@ -61,6 +68,7 @@ def main(
         "wallet_name": wallet,
         "wallet_hotkey": hotkey,
         "wallet_path": wallet_path,
+        "dev_signature": dev_signature,
         "output_format": output,
         "request_timeout_seconds": timeout,
     }

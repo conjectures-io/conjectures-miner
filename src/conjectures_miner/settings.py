@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     wallet_name: str = "default"
     wallet_hotkey: str = "default"
     wallet_path: Path | None = None
+    # A validator outside PROD defaults to the static-key authenticator, which wants a fixed
+    # marker where a signature goes. Off by default: an installed CLI meets production, and
+    # production refuses the marker.
+    dev_signature: bool = False
 
     # `cache_dir` is disposable; `state_dir` holds idempotency keys whose loss can cost a
     # payment. Kept apart so one command that clears "the data" cannot take both.

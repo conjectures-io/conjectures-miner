@@ -61,6 +61,11 @@ conjectures config show --resolved      # every value, and which layer it came f
 Wallet *names* live in the config; key material never does. The hotkey signs, and the coldkey
 that paid is checked on-chain by the validator -- this tool never needs your coldkey.
 
+Against a validator running outside `APP_MODE=PROD`, `--dev-signature` sends the fixed marker its
+static-key authenticator expects instead of signing (`conjectures config set dev_signature true`
+to keep it). That mode opens no private key at all -- the marker is a constant -- and a production
+validator refuses it, so the default is a real signature.
+
 `--output json` emits exactly one JSON document on stdout, so `conjectures tasks list --output
 json | jq` works. Exit codes: `1` refused, `2` bad configuration or input, `3` the validator said
 no, `4` the validator was unreachable.
