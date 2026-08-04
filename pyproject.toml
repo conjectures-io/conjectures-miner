@@ -10,11 +10,13 @@ dependencies = [
     "platformdirs>=4.11.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
+    "rich>=13.8.0",
+    "tomli-w>=1.2.0",
     "typer>=0.27.1",
 ]
 
 [project.scripts]
-conjectures = "conjectures_miner.cli:app"
+conjectures = "conjectures_miner.cli:run"
 
 [build-system]
 requires = ["hatchling>=1.25"]
@@ -33,3 +35,24 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "PTH", "C4", "ARG"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer reads options off the signature, so a parameter the body never touches is the interface.
+"src/conjectures_miner/commands/*.py" = ["ARG001"]
+"src/conjectures_miner/cli.py" = ["ARG001"]
+# pydantic-settings dictates the source-hook signature.
+"src/conjectures_miner/settings.py" = ["ARG003"]
+
+[tool.pyright]
+include = ["src", "tests"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "standard"

@@ -1,45 +1,48 @@
-"""`submission.json` -- the plan a build produces and a submit consumes.
+"""The plan `build` writes and `submit` consumes, and the gate both `check` and `submit` go through.
 
-The archive is built exactly once, by `build`, and is never rebuilt. This file points at it,
-records its digest, and carries everything else a submission needs. `check` and `submit` are
-handed the plan, resolve the archive, verify it still hashes to what was built, and send
-those exact bytes.
-
-Building once is what removes a whole class of problem. Nothing has to reproduce a
-byte-identical zip later, so entry order, timestamps and platform-dependent header fields
-stop mattering; what `check` approved is literally what `submit` sends. It also means the
-proof source is irrelevant after `build` -- editing `Main.lean` afterwards does nothing
-until you rebuild, which is a far clearer rule than rebuilding and hoping the bytes match.
-
-What the plan does *not* get to decide is identity. `task_id`, `task_bundle_sha256`,
-`proof_sha256` and `miner_hotkey` live in the archive's own `manifest.json`, because that is
-the copy the validator parses and cross-checks against the authenticated request
-(`verifier/bundle.py:524-532`). The `manifest` block here is a readable copy so a plan can
-be reviewed without unzipping; if the two ever disagree, that is refused rather than
-resolved, because the plan is what a human read and the archive is what would be sent.
-
-The `payment.reference` slot is why this file exists rather than a bare zip: a later
-`conjectures pay` writes into it, after which `conjectures submit` needs no arguments at
-all.
+The archive is built exactly once and never rebuilt. The plan points at it, records its digest,
+and carries the payment slot a later `conjectures pay` will fill. Building once means nothing has
+to reproduce a byte-identical zip afterwards, and what `check` approved is literally what `submit`
+sends. Identity is not the plan's to decide: `task_id`, `task_bundle_sha256`, `proof_sha256` and
+`miner_hotkey` live in the archive's own manifest, because that is the copy the validator parses
+and cross-checks against the authenticated request.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Literal, get_args
 
-PLAN_SCHEMA_VERSION = 1
-DEFAULT_PLAN_NAME = "submission.json"
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from conjectures_miner import bundle as bundle_module
+from conjectures_miner.digest import sha256_prefixed
+from conjectures_miner.errors import CliError
+
+PlanFormat = Literal["conjectures-submission-plan/v1"]
+PlanSchemaVersion = Literal[1]
+PLAN_FORMAT: PlanFormat = get_args(PlanFormat)[0]
+PLAN_SCHEMA_VERSION: PlanSchemaVersion = get_args(PlanSchemaVersion)[0]
+# Not `submission.json`: that name is already taken by the manifest *inside* the archive, and
+# unzipping beside the plan would overwrite it.
+DEFAULT_PLAN_NAME = "submission.plan.json"
 
 
-@dataclass(frozen=True, slots=True)
-class BundleRef:
+class PlanError(CliError):
+    exit_code = 2
+
+
+class Model(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class BundleRef(Model):
     """Where the archive is, and what it must still hash to.
 
-    `path` is stored **relative to the plan file**. Absolute paths break when the pair is
-    moved or mounted somewhere else; paths relative to the working directory break as soon
-    as the miner runs the command from elsewhere. Relative to the plan, the two travel
-    together.
+    `path` is relative to the plan file, so the two travel together when the pair is moved.
     """
 
     path: str
@@ -47,89 +50,126 @@ class BundleRef:
     bytes: int
 
 
-@dataclass(frozen=True, slots=True)
-class PaymentRef:
-    """The payment, once there is one.
+class PaymentRef(Model):
+    """The payment, once there is one. `price_rao_seen` and `recipient_seen` detect a change;
+    neither is what a miner should pay against."""
 
-    `reference` is null until paid, which is the normal state of a fresh plan.
-    `price_rao_seen` and `recipient_seen` are what the validator reported at build time,
-    kept so a change can be *detected*. Neither is what a miner should pay against -- a
-    rotated recipient means TAO sent to an address no refusal will return.
-    """
-
-    reference: str | None
-    price_rao_seen: int | None
-    recipient_seen: str | None
+    reference: str | None = None
+    price_rao_seen: int | None = None
+    recipient_seen: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class Provenance:
+class Provenance(Model):
     """How the plan came to exist. Never sent anywhere."""
 
-    built_at: str
+    built_at: datetime
     tool_version: str
     task_requested: str
-    task_digest_source: str
     api_base_url: str
-    repository_commit: str | None
-    proof_source_path: str
+    repository_commit: str | None = None
+    proof_source: str
 
 
-@dataclass(frozen=True, slots=True)
-class SubmissionPlan:
+class SubmissionPlan(Model):
     """One submission, fully described except for what only the miner can supply."""
 
-    schema_version: int
+    schema_version: PlanSchemaVersion = PLAN_SCHEMA_VERSION
+    format: PlanFormat = PLAN_FORMAT
     bundle: BundleRef
-    # Display copy of the archive's manifest. Readable, reviewable, and not authoritative.
-    manifest: dict[str, object]
-    payment: PaymentRef
+    # A readable copy of the archive's manifest, so a plan can be reviewed without unzipping.
+    # Not authoritative: a disagreement is refused rather than resolved.
+    manifest: dict[str, Any]
+    payment: PaymentRef = PaymentRef()
     provenance: Provenance
 
 
-class PlanError(Exception):
-    """A plan that cannot be acted on. Always names the resolved path it tried."""
+@dataclass(frozen=True, slots=True)
+class Loaded:
+    """A verified archive and, when one was used, the plan that vouched for it."""
+
+    archive: bundle_module.Bundle
+    plan: SubmissionPlan | None
+    source: Path
+
+    @property
+    def payment_reference(self) -> str | None:
+        return self.plan.payment.reference if self.plan else None
 
 
 def write(plan_path: Path, plan: SubmissionPlan) -> Path:
-    """Write `submission.json`, with the bundle path relativised against `plan_path`."""
-    raise NotImplementedError
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return plan_path
 
 
 def read(plan_path: Path) -> SubmissionPlan:
-    """Parse a plan. Raises `PlanError` on a missing file, bad JSON, or a stale schema."""
-    raise NotImplementedError
+    try:
+        payload = json.loads(plan_path.read_text("utf-8"))
+    except FileNotFoundError as exc:
+        raise PlanError(
+            f"no submission plan at {plan_path}",
+            hint="Run `conjectures build` first, or pass --plan.",
+        ) from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PlanError(f"could not read {plan_path}: {exc}") from exc
+    try:
+        return SubmissionPlan.model_validate(payload)
+    except ValidationError as exc:
+        raise PlanError(
+            f"{plan_path} is not a {PLAN_FORMAT} plan: {exc.error_count()} problems"
+        ) from exc
 
 
-def resolve_bundle_path(plan_path: Path, plan: SubmissionPlan) -> Path:
-    """Turn `plan.bundle.path` into a real path, relative to the plan file's directory."""
-    raise NotImplementedError
+def bundle_path(plan_path: Path, plan: SubmissionPlan) -> Path:
+    return (plan_path.parent / plan.bundle.path).resolve()
 
 
-def load_verified(plan_path: Path) -> tuple[SubmissionPlan, bytes]:
-    """Read a plan and return it with the archive bytes it vouches for.
+def load(plan_path: Path | None, bundle_override: Path | None) -> Loaded:
+    """The single gate for `check` and `submit`: resolve an archive and prove it is the right one.
 
-    The single entry point for `check` and `submit`, so both apply the same gate:
-
-    1. parse the plan;
-    2. resolve the bundle path against the plan's directory, and report that resolved path
-       in any error -- a path-relative mistake is baffling otherwise;
-    3. read the archive and refuse unless it hashes to `bundle.sha256` and matches
-       `bundle.bytes`; a mismatch means the archive was replaced, truncated, or rebuilt, and
-       submitting bytes nobody checked is exactly what this prevents;
-    4. parse the archive's own manifest and refuse if it disagrees with the plan's display
-       copy, naming the fields that differ.
-
-    Returns the bytes rather than a path so that no caller can re-read the file and get
-    something else.
+    A bare `--bundle` is allowed because an archive is self-describing; a plan additionally has to
+    still agree with the archive it points at.
     """
-    raise NotImplementedError
+    if bundle_override is not None:
+        return Loaded(
+            archive=bundle_module.read(bundle_override), plan=None, source=bundle_override
+        )
+    if plan_path is None:
+        raise PlanError("nothing to submit: pass --plan or --bundle")
+
+    plan = read(plan_path)
+    archive_path = bundle_path(plan_path, plan)
+    if not archive_path.is_file():
+        raise PlanError(
+            f"{plan_path} points at {archive_path}, which does not exist",
+            hint="Rebuild with `conjectures build`, or move the archive back beside the plan.",
+        )
+
+    # Digest before parse, so bytes nobody sealed are reported as the wrong archive rather than
+    # as whatever the zip reader happens to make of them.
+    raw = bundle_module.load_bytes(archive_path)
+    if len(raw) != plan.bundle.bytes or sha256_prefixed(raw) != plan.bundle.sha256:
+        raise PlanError(
+            f"{archive_path} is not the archive {plan_path} was built for",
+            hint="Replaced, truncated, or rebuilt. Rebuild the pair with `conjectures build`.",
+        )
+
+    archive = bundle_module.parse(raw, source=archive_path)
+    differing = sorted(
+        key
+        for key in set(plan.manifest) | set(archive.manifest)
+        if plan.manifest.get(key) != archive.manifest.get(key)
+    )
+    if differing:
+        raise PlanError(
+            f"{plan_path} and the archive's manifest disagree on {', '.join(differing)}",
+            hint="Rebuild the pair with `conjectures build`.",
+        )
+    return Loaded(archive=archive, plan=plan, source=plan_path)
 
 
-def missing_for_submit(plan: SubmissionPlan) -> list[str]:
-    """What a plan still lacks before it can be submitted.
-
-    Today that is only the payment reference. Returned as a list so the command can say
-    everything that is missing at once instead of one round of trial and error per field.
-    """
-    raise NotImplementedError
+def missing_for_submit(plan: SubmissionPlan | None) -> list[str]:
+    """What a plan still lacks, reported all at once rather than one field per attempt."""
+    if plan is None or plan.payment.reference is None:
+        return ["payment reference (--payment-ref)"]
+    return []

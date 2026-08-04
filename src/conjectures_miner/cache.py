@@ -1,138 +1,147 @@
-"""The local task cache. What makes short task names and shell completion possible.
+"""The local copy of `GET /v1/tasks`. What makes short task names and shell completion possible.
 
-`GET /v1/tasks` is small, so a sync stores the whole response verbatim together with the
-moment it was fetched and the `repository_commit` it came from. That commit is what makes
-staleness detectable: `GET /v1/system/status` returns the same field, so one cheap call says
-whether the entire cache has rotated out from under you.
-
-Three rules this module exists to enforce.
-
-**A cached task digest is safe to build against.** The validator resolves `task_id` plus
-`task_bundle_sha256` and refuses with `TASK_NOT_ALLOWED` before it confirms the payment and
-before any row reaches `submissions`, and the unique constraint on `payment_reference` lives
-on that table alone. So a rotated pool costs a rebuild with the same payment reference, not
-the payment. `check` surfaces it earlier and for free. This is why `build` is offline.
-
-**A cached `payment_recipient` is not safe to pay.** Nothing on the validator side protects
-a transfer sent to a rotated address, and no refusal gives it back. `submission_price_rao`
-and `payment_recipient` are stored here only so a change can be *detected*; the values a
-miner pays against must come from a fresh call. That asymmetry -- digests forgiving,
-recipients not -- is the reason both are recorded rather than either being trusted.
-
-**The cache is disposable; state is not.** This lives under the platform cache directory,
-never beside the idempotency keys in `state`. Deleting it must cost nothing but a sync.
-
-Keyed by API base URL, so pointing at a local validator and then at production cannot poison
-one with the other's tasks.
+A cached task digest is safe to build against: the validator resolves the task and refuses with
+`TASK_NOT_ALLOWED` before it confirms the payment and before any row reaches `submissions`, so a
+pool that rotated costs a rebuild rather than the payment. A cached `payment_recipient` is not
+safe to pay -- nothing gives back TAO sent to a rotated address -- so price and recipient are
+stored here only so a change can be detected.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+import re
+from datetime import UTC, datetime
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from conjectures_miner.errors import CliError
 
 CACHE_SCHEMA_VERSION = 1
 CACHE_FILE_SUFFIX = ".tasks.json"
 
 
-class TaskResolutionError(Exception):
-    """Base for the two ways a short task name can fail."""
+class UnknownTaskError(CliError):
+    exit_code = 2
 
 
-class UnknownTask(TaskResolutionError):
-    """Nothing in the cache matched. Usually means the cache needs a sync."""
+class AmbiguousTaskError(CliError):
+    exit_code = 2
+
+    def __init__(self, needle: str, candidates: list[str]) -> None:
+        shown = "\n  ".join(candidates[:10])
+        more = "" if len(candidates) <= 10 else f"\n  ... and {len(candidates) - 10} more"
+        super().__init__(f"{needle!r} matches {len(candidates)} tasks:\n  {shown}{more}")
+        self.candidates = candidates
 
 
-class AmbiguousTask(TaskResolutionError):
-    """More than one task matched. Carries the candidates so the caller can print them."""
-
-    candidates: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class CachedTask:
-    """One allowlisted task, as `GET /v1/tasks` reported it."""
+class CachedTask(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     task_id: str
     task_bundle_sha256: str
-    target_type_sha256s: tuple[str, ...]
+    target_type_sha256s: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class TaskCacheFile:
-    """Everything one sync produced, plus when and against what.
+class TaskCacheFile(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
-    `submission_price_rao` and `payment_recipient` are recorded for comparison only. Nothing
-    should ever render them as "pay this" without a fresh call.
-    """
-
-    schema_version: int
+    schema_version: int = CACHE_SCHEMA_VERSION
     api_base_url: str
     repository_commit: str
-    fetched_at: str
+    fetched_at: datetime
     bundle_format: str
     max_bundle_bytes: int
     submission_price_rao: int
     payment_recipient: str
     tasks: tuple[CachedTask, ...]
 
+    def get(self, task_id: str) -> CachedTask | None:
+        return next((task for task in self.tasks if task.task_id == task_id), None)
+
 
 class TaskCache:
-    """Read and write one API's cached task list, and resolve short names against it."""
+    """One API's cached task list, and short-name resolution against it."""
 
     def __init__(self, cache_dir: Path, api_base_url: str) -> None:
-        """The file name derives from `api_base_url`, so two validators never collide."""
+        self._dir = cache_dir
+        self._api_base_url = api_base_url
 
     @property
     def path(self) -> Path:
-        """Where this API's cache file lives. Safe to delete at any time."""
-        raise NotImplementedError
+        # Keyed by API, so pointing at a local validator and then at production cannot poison
+        # one with the other's tasks. The slug is only there to keep the directory readable.
+        slug = re.sub(r"[^a-z0-9]+", "-", self._api_base_url.lower()).strip("-")[:40]
+        fingerprint = hashlib.sha256(self._api_base_url.encode()).hexdigest()[:12]
+        return self._dir / f"{slug}-{fingerprint}{CACHE_FILE_SUFFIX}"
 
     def load(self) -> TaskCacheFile | None:
-        """Return the cached list, or `None` when absent, unreadable, or a stale schema.
+        """The cached list, or None when absent, unreadable, or written by an older schema."""
+        try:
+            payload = json.loads(self.path.read_text("utf-8"))
+            cached = TaskCacheFile.model_validate(payload)
+        except (OSError, json.JSONDecodeError, ValidationError):
+            return None
+        return cached if cached.schema_version == CACHE_SCHEMA_VERSION else None
 
-        Never raises. A corrupt cache is a cache miss, not a failed command -- the fix is
-        always the same sync.
-        """
-        raise NotImplementedError
+    def require(self) -> TaskCacheFile:
+        cached = self.load()
+        if cached is None:
+            raise UnknownTaskError(
+                f"no task cache for {self._api_base_url}",
+                hint="Run `conjectures tasks sync` first.",
+            )
+        return cached
 
-    def save(self, payload: TaskCacheFile) -> None:
-        """Replace the cache atomically: write a temporary file, then rename."""
+    def save(self, payload: TaskCacheFile) -> Path:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".partial")
+        temporary.write_text(payload.model_dump_json(indent=2), encoding="utf-8")
+        temporary.replace(self.path)
+        return self.path
 
-    def resolve(self, needle: str) -> str:
-        """Turn a task id, unique prefix, or unique substring into a full task id.
-
-        The point is that a miner types `erdos89` rather than a 71-character digest, and
-        that it works in scripts and over ssh where completion does not. Raises
-        `UnknownTask` or `AmbiguousTask`; an exact `task_id` match always wins over any
-        partial one.
-        """
-        raise NotImplementedError
+    def resolve(self, needle: str) -> CachedTask:
+        """Turn a task id, or a unique prefix or substring of one, into the cached task."""
+        cached = self.require()
+        exact = cached.get(needle)
+        if exact is not None:
+            return exact
+        matches = self._matches(cached, needle)
+        if not matches:
+            raise UnknownTaskError(
+                f"no task matches {needle!r}",
+                hint="Run `conjectures tasks sync`, or `conjectures tasks list` to see the pool.",
+            )
+        if len(matches) > 1:
+            raise AmbiguousTaskError(needle, [task.task_id for task in matches])
+        return matches[0]
 
     def candidates(self, needle: str) -> list[str]:
-        """Every task id `needle` could mean.
-
-        Backs both completion and the ambiguity error.
-        """
-        raise NotImplementedError
+        cached = self.load()
+        if cached is None:
+            return []
+        return [task.task_id for task in self._matches(cached, needle)]
 
     def age_seconds(self) -> float | None:
-        """How long ago this cache was synced, or `None` if there is no cache."""
-        raise NotImplementedError
+        cached = self.load()
+        if cached is None:
+            return None
+        return (datetime.now(UTC) - cached.fetched_at).total_seconds()
 
-    def is_current_for(self, repository_commit: str) -> bool:
-        """Whether the cache was built against the commit the validator is serving now.
-
-        False means the pool rotated and every digest in here is suspect.
-        """
-        raise NotImplementedError
+    @staticmethod
+    def _matches(cached: TaskCacheFile, needle: str) -> list[CachedTask]:
+        prefixed = [task for task in cached.tasks if task.task_id.startswith(needle)]
+        return prefixed or [task for task in cached.tasks if needle in task.task_id]
 
 
 def complete_task_id(incomplete: str) -> list[str]:
-    """typer completion callback for a `--task` value.
+    """Shell completion for a task option. Runs on every Tab, so it must never raise."""
+    try:
+        from conjectures_miner.settings import load
 
-    Runs on every Tab, so it reads the cache file and nothing else: no network, no settings
-    validation, no exceptions. An absent or unreadable cache returns an empty list, which
-    shows up as "no completions" rather than as a broken shell.
-    """
-    raise NotImplementedError
+        settings = load()
+        return TaskCache(settings.cache_dir, settings.api_root).candidates(incomplete)
+    except Exception:  # a broken cache or a bad env var must not break the shell
+        return []

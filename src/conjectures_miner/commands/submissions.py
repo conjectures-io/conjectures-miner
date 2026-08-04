@@ -1,16 +1,26 @@
 """`conjectures submissions` -- what happened to a submission.
 
-Both reads are authenticated with the **read scheme**, not the submit signature: a hotkey
-may only read its own submissions.
+Both reads use the read signature scheme, not the submit one: a hotkey may read only its own.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Annotated
 
 import typer
 
+from conjectures_miner.api import models
+from conjectures_miner.commands import context
+from conjectures_miner.context import AppContext
+from conjectures_miner.errors import ApiError
+from conjectures_miner.signing import read_headers
+
 app = typer.Typer(help="Track submitted proofs.", no_args_is_help=True)
+
+POLL_FIRST_SECONDS = 5.0
+POLL_MAX_SECONDS = 60.0
+POLL_BACKOFF = 1.5
 
 
 @app.command("show")
@@ -20,19 +30,75 @@ def show(
     watch: Annotated[
         bool, typer.Option("--watch", help="Poll until verification settles.")
     ] = False,
+    timeout: Annotated[
+        float, typer.Option(help="Give up watching after this many seconds.")
+    ] = 900.0,
 ) -> None:
-    """`GET /v1/submissions/{id}` -- payment, verification, review, and reward state.
-
-    `--watch` polls on a backoff and stops once the state is terminal.
-    """
+    """Read payment, verification, review, and reward state."""
+    app_ctx = context(ctx)
+    status = _read(app_ctx, submission_id)
+    if watch:
+        status = _watch(app_ctx, submission_id, status, timeout)
+    app_ctx.render.data(_summary(status), title=f"submission {submission_id}")
 
 
 @app.command("report")
-def report(
-    ctx: typer.Context,
-    submission_id: Annotated[str, typer.Argument()],
-) -> None:
-    """`GET /v1/submissions/{id}/report` -- the verifier's report.
+def report(ctx: typer.Context, submission_id: Annotated[str, typer.Argument()]) -> None:
+    """Read the verifier's immutable report. Absent until verification finishes."""
+    app_ctx = context(ctx)
+    headers = read_headers(app_ctx.signer, submission_id=submission_id)
+    try:
+        answer = app_ctx.client.read_report(submission_id, headers=headers)
+    except ApiError as exc:
+        if exc.status_code != 409:
+            raise
+        app_ctx.render.note("Verification has not produced a report yet.")
+        raise typer.Exit(1) from exc
+    app_ctx.render.data(
+        {"report_sha256": answer.report_sha256, **answer.report}, title="verifier report"
+    )
 
-    Absent until verification finishes, which is a normal answer rather than an error.
-    """
+
+def _read(app_ctx: AppContext, submission_id: str) -> models.SubmissionStatus:
+    return app_ctx.client.read_submission(
+        submission_id, headers=read_headers(app_ctx.signer, submission_id=submission_id)
+    )
+
+
+def _watch(
+    app_ctx: AppContext,
+    submission_id: str,
+    status: models.SubmissionStatus,
+    timeout: float,
+) -> models.SubmissionStatus:
+    deadline = time.monotonic() + timeout
+    delay = POLL_FIRST_SECONDS
+    while not status.settled:
+        if time.monotonic() + delay > deadline:
+            app_ctx.render.note(f"Still {status.verification_status} after {timeout:.0f}s.")
+            break
+        app_ctx.render.note(f"{status.verification_status}; checking again in {delay:.0f}s")
+        time.sleep(delay)
+        delay = min(delay * POLL_BACKOFF, POLL_MAX_SECONDS)
+        status = _read(app_ctx, submission_id)
+    return status
+
+
+def _summary(status: models.SubmissionStatus) -> dict[str, object]:
+    verification = status.verification
+    return {
+        "submission_id": str(status.submission_id),
+        "task_id": status.task_id,
+        "verification_status": status.verification_status,
+        "manual_review_status": status.manual_review_status,
+        "reward_status": status.reward_status,
+        "failure_reason": status.failure_reason,
+        "reason_code": verification.reason_code if verification else None,
+        "stage": verification.stage if verification else None,
+        "report_available": verification.report_available if verification else False,
+        "bounty_amount_rao": status.bounty.amount_rao,
+        "payment_reference": status.payment.reference,
+        "payment_block": status.payment.block,
+        "created_at": status.created_at,
+        "updated_at": status.updated_at,
+    }

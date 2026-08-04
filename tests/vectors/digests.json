@@ -1,0 +1,21 @@
+{
+  "_source": "Generated from the validator: verifier.hashing.canonical_json_bytes + sha256_bytes, which is what conjectures_subnet.db.submissions.canonical_request_digest composes. Regenerate against a known validator commit rather than editing an expectation by hand.",
+  "request_digest": {
+    "input": {
+      "hotkey": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      "task_id": "fc-379fc029-erdos89-erdos-89-c956ed476a-formalized-v1",
+      "task_bundle_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proof_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "payment_reference": "0x1234:5",
+      "idempotency_key": "6f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    },
+    "expected": "sha256:cac9da813f6a2a5034959995150f917d3b4a9875a63f0a15acd63bd797040c2b"
+  },
+  "read_message": {
+    "input": {
+      "hotkey_ss58": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      "submission_id": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    },
+    "expected": "sha256:158fe6f2b8f4bf3abfb9711030e77266a677ed90b9dc5e0b66b36c5de7be382e"
+  }
+}

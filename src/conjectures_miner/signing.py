@@ -1,22 +1,25 @@
-"""Wallet loading, and the headers each authenticated call needs.
+"""Wallet loading and the headers each authenticated call needs.
 
-The only module that touches key material, and the only one that imports bittensor. Commands
-ask for headers; they never see a keypair.
-
-Note which key does what: the **coldkey pays** and the **hotkey signs**. The validator
-checks on-chain that the paying coldkey owns the submitting hotkey, so the CLI never needs
-the coldkey -- it needs the hotkey plus the extrinsic reference for a transfer that
-already happened.
+The only module that touches key material. Commands ask for headers; they never see a keypair.
+The coldkey pays and the hotkey signs -- the validator checks on-chain that the paying coldkey
+owns the submitting hotkey, so this tool only ever needs the hotkey.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import time
 from typing import Protocol
+from urllib.parse import urlparse
+
+from conjectures_miner import digest
+from conjectures_miner.errors import ConfigError
+from conjectures_miner.settings import Settings
+
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
 class Signer(Protocol):
-    """The narrow view of a keypair that this tool actually uses."""
+    """The narrow view of a keypair this tool uses."""
 
     @property
     def ss58_address(self) -> str: ...
@@ -24,34 +27,37 @@ class Signer(Protocol):
     def sign(self, message: bytes) -> bytes: ...
 
 
-def load_signer(
-    *,
-    wallet_name: str | None,
-    hotkey_name: str | None,
-    wallet_path: Path | None,
-    uri: str | None = None,
-) -> Signer:
-    """Open a hotkey for signing.
+def load_signer(settings: Settings, *, uri: str | None = None) -> Signer:
+    """Open a hotkey for signing."""
+    if uri:
+        _assert_local(settings.api_root)
+        from bittensor.sp_core import Keypair
 
-    `uri` accepts a development key such as `//Alice` and must be refused against anything
-    but a local endpoint -- a dev key on mainnet is a stolen submission waiting to happen.
-    """
-    raise NotImplementedError
+        return Keypair.create_from_uri(uri)
+    try:
+        return _wallet(settings).hotkey
+    except Exception as exc:
+        raise ConfigError(
+            f"could not open hotkey {settings.wallet_name}/{settings.wallet_hotkey}: {exc}",
+            hint="Check --wallet and --hotkey, or pass --wallet-path.",
+        ) from exc
 
 
-def resolve_hotkey_address(
-    *,
-    wallet_name: str | None,
-    hotkey_name: str | None,
-    wallet_path: Path | None,
-    explicit: str | None = None,
+def hotkey_address(
+    settings: Settings, *, uri: str | None = None, explicit: str | None = None
 ) -> str:
-    """Get the SS58 address without unlocking anything.
-
-    `build` and `check` need the address only -- it goes in the bundle manifest and in
-    preflight's header. Neither should prompt for a password.
-    """
-    raise NotImplementedError
+    """The SS58 address, without unlocking anything -- `build` and `check` need no private key."""
+    if explicit:
+        return explicit
+    if uri:
+        return load_signer(settings, uri=uri).ss58_address
+    try:
+        return _wallet(settings).hotkeypub.ss58_address
+    except Exception as exc:
+        raise ConfigError(
+            f"could not read hotkey {settings.wallet_name}/{settings.wallet_hotkey}: {exc}",
+            hint="Check --wallet and --hotkey, or pass the address with --hotkey-ss58.",
+        ) from exc
 
 
 def submit_headers(
@@ -62,16 +68,50 @@ def submit_headers(
     proof_sha256: str,
     payment_reference: str,
     idempotency_key: str,
-    content_length: int,
 ) -> dict[str, str]:
-    """Headers for `POST /v1/submissions`.
-
-    Signs `digest.request_digest(...)`. The digest's hex is signed as **bytes**, not as its
-    string form.
-    """
-    raise NotImplementedError
+    """Headers for `POST /v1/submissions`, signing the canonical request digest."""
+    request_digest = digest.request_digest(
+        hotkey=signer.ss58_address,
+        task_id=task_id,
+        task_bundle_sha256=task_bundle_sha256,
+        proof_sha256=proof_sha256,
+        payment_reference=payment_reference,
+        idempotency_key=idempotency_key,
+    )
+    return {
+        "Idempotency-Key": idempotency_key,
+        "X-Conjectures-Task-Id": task_id,
+        "X-Conjectures-Task-Sha256": task_bundle_sha256,
+        "X-Conjectures-Proof-Sha256": proof_sha256,
+        "X-Conjectures-Payment-Ref": payment_reference,
+        **_signed(signer, digest.to_bytes(request_digest)),
+    }
 
 
 def read_headers(signer: Signer, *, submission_id: str) -> dict[str, str]:
-    """Headers for the status and report reads. Signs `digest.read_message(...)`."""
-    raise NotImplementedError
+    """Headers for the status and report reads. A different scheme from the submit path."""
+    message = digest.read_message(hotkey_ss58=signer.ss58_address, submission_id=submission_id)
+    return _signed(signer, message)
+
+
+def _signed(signer: Signer, message: bytes) -> dict[str, str]:
+    return {
+        "X-Conjectures-Hotkey": signer.ss58_address,
+        "X-Conjectures-Timestamp": str(int(time.time() * 1000)),
+        "X-Conjectures-Signature": signer.sign(message).hex(),
+    }
+
+
+def _wallet(settings: Settings):  # type: ignore[no-untyped-def] - bittensor ships no stubs
+    from bittensor.wallet import Wallet
+
+    extra = {"path": str(settings.wallet_path)} if settings.wallet_path else {}
+    return Wallet(name=settings.wallet_name, hotkey=settings.wallet_hotkey, **extra)
+
+
+def _assert_local(api_root: str) -> None:
+    if (urlparse(api_root).hostname or "") not in LOCAL_HOSTS:
+        raise ConfigError(
+            f"refusing to use a development key against {api_root}",
+            hint="--uri is for a local validator only.",
+        )

@@ -1,22 +1,36 @@
-"""`conjectures status` -- is the validator accepting work right now.
-
-Worth calling before paying. Submissions can be paused for a pin rotation, in which case
-both intake paths refuse with 503 `SUBMISSIONS_PAUSED` -- the miner did nothing wrong and
-should come back.
-
-It is also the cheapest way to learn that the local task cache is stale, because the
-response carries the same `repository_commit` the cache recorded at sync time.
-"""
+"""`conjectures status` -- is the validator accepting work right now."""
 
 from __future__ import annotations
 
 import typer
 
+from conjectures_miner.commands import context
+
 
 def status(ctx: typer.Context) -> None:
-    """`GET /v1/system/status`: `submissions_open`, queue depths, rotation, banner.
+    """Report whether submissions are open, the queues, the rotation window, and cache currency."""
+    app_ctx = context(ctx)
+    live = app_ctx.client.system_status()
+    cached = app_ctx.cache.load()
 
-    Also reports the live price and payment recipient -- this is a fresh call, so these are
-    the values it is safe to pay against -- and whether the cached task list still matches
-    the commit being served.
-    """
+    app_ctx.render.data(
+        {
+            "status": live.status,
+            "submissions_open": live.submissions_open,
+            "repository_commit": live.repository_commit,
+            "awaiting_verification": live.queue_depths.awaiting_verification,
+            "awaiting_review": live.queue_depths.awaiting_review,
+            "awaiting_reward": live.queue_depths.awaiting_reward,
+            "pin_rotation_starts_at": live.pin_rotation.starts_at,
+            "pin_rotation_in_progress": live.pin_rotation.in_progress,
+            "task_cache_current": None
+            if cached is None
+            else cached.repository_commit == live.repository_commit,
+            "banner": live.banner,
+        },
+        title=app_ctx.settings.api_root,
+    )
+    if not live.submissions_open:
+        app_ctx.render.note("[yellow]Submissions are paused. Nothing to fix; come back later.[/]")
+    elif cached is not None and cached.repository_commit != live.repository_commit:
+        app_ctx.render.note("[yellow]The task pool moved. Run `conjectures tasks sync`.[/]")

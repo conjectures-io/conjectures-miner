@@ -1,6 +1,8 @@
 """Support `python -m conjectures_miner` alongside the installed `conjectures` script."""
 
-from conjectures_miner.cli import app
+import sys
+
+from conjectures_miner.cli import run
 
 if __name__ == "__main__":
-    app()
+    sys.exit(run())

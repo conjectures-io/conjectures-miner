@@ -1,79 +1,87 @@
-"""Resolved configuration, and the precedence rules that produce it.
+"""Resolved configuration: CLI flag > environment > user config file > default.
 
-Precedence, highest first: **CLI flag -> environment -> user config file -> default.**
-
-That is *not* pydantic-settings' default order, so `settings_customise_sources` reorders it.
-The flag layer only works if the caller strips options the user did not actually supply --
-a typer option defaulting to `None` must not outrank a real environment variable. See
-`load()`.
-
-Never add a field holding key material. Wallet *names* and paths belong here; seeds,
-mnemonics and passwords do not. This tool spends TAO, and env vars leak into shells,
-process listings, and CI logs.
+Never add a field holding key material. Wallet names and paths belong here; seeds, mnemonics and
+passwords do not, because env vars leak into shells, process listings and CI logs.
 """
 
 from __future__ import annotations
 
+import os
+import tomllib
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
-from pydantic import HttpUrl
+import platformdirs
+from pydantic import Field, ValidationError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
+    TomlConfigSettingsSource,
 )
 
-# Placeholder until the production host is confirmed -- see docs/MINER.md, which refers
-# to it only as $CONJECTURES_API.
+from conjectures_miner.errors import ConfigError
+
+# Placeholder until the production host is confirmed -- the validator docs name it only as
+# $CONJECTURES_API.
 DEFAULT_API_BASE_URL = "https://api.conjectures.io"
 
+APP_NAME = "conjectures"
+ENV_PREFIX = "CONJECTURES_"
+CONFIG_FILE_ENV = f"{ENV_PREFIX}CONFIG_FILE"
 CONFIG_FILE_NAME = "config.toml"
+
+OutputFormat = Literal["auto", "table", "json"]
+
+
+def config_file_path() -> Path:
+    """A user-level file, so which directory the tool runs from cannot change where it submits."""
+    override = os.environ.get(CONFIG_FILE_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path(platformdirs.user_config_dir(APP_NAME)) / CONFIG_FILE_NAME
+
+
+def read_config_file() -> dict[str, Any]:
+    path = config_file_path()
+    if not path.is_file():
+        return {}
+    try:
+        return tomllib.loads(path.read_text("utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"could not read {path}: {exc}") from exc
 
 
 class Settings(BaseSettings):
-    """Everything a command may need that the user can configure.
-
-    One `api_base_url` rather than host + port: production is TLS on 443 and may carry a
-    path prefix, both of which a separate port field breaks.
-    """
+    """Everything a command may need that the user can configure."""
 
     model_config: ClassVar[SettingsConfigDict] = SettingsConfigDict(
-        env_prefix="CONJECTURES_",
-        extra="forbid",
+        env_prefix=ENV_PREFIX, extra="forbid"
     )
 
-    # --- validator endpoint ---
-    api_base_url: HttpUrl
-    request_timeout_seconds: float
-    # Submitting streams a zip body; polling is cheap. Separate because one deserves
-    # patience.
-    upload_timeout_seconds: float
+    # One base URL rather than host + port: production is TLS on 443 and may carry a path prefix.
+    api_base_url: str = DEFAULT_API_BASE_URL
+    request_timeout_seconds: float = 30.0
+    # Submitting streams a zip body; polling is cheap. Separate because one deserves patience.
+    upload_timeout_seconds: float = 120.0
 
-    # --- wallet: names and locations only, never material ---
-    wallet_name: str | None
-    wallet_hotkey: str | None
-    wallet_path: Path | None
+    # Wallet: names and locations only, never material.
+    wallet_name: str = "default"
+    wallet_hotkey: str = "default"
+    wallet_path: Path | None = None
 
-    # --- chain: declared, unread by the MVP ---
-    # The MVP takes `--payment-ref` for an already-finalized transfer, so nothing here is
-    # required. Absent values must not fail validation.
-    network: str | None
-    chain_endpoint: HttpUrl | None
+    # `cache_dir` is disposable; `state_dir` holds idempotency keys whose loss can cost a
+    # payment. Kept apart so one command that clears "the data" cannot take both.
+    cache_dir: Path = Field(default_factory=lambda: Path(platformdirs.user_cache_dir(APP_NAME)))
+    state_dir: Path = Field(default_factory=lambda: Path(platformdirs.user_state_dir(APP_NAME)))
+    cache_max_age_seconds: float = 24 * 60 * 60
 
-    # --- local directories: kept apart on purpose ---
-    # `cache_dir` holds the synced task list and is safe to delete at any time.
-    # `state_dir` holds the idempotency keys, whose loss can cost a payment. One command
-    # that clears "the data" must not be able to take both.
-    cache_dir: Path
-    state_dir: Path
+    output_format: OutputFormat = "auto"
 
-    # How old a task cache may be before `build` says so. Never a correctness boundary --
-    # `build` refetches the digest it commits to regardless.
-    cache_max_age_seconds: float
-
-    # --- presentation ---
-    output_format: str
+    @property
+    def api_root(self) -> str:
+        return self.api_base_url.rstrip("/")
 
     @classmethod
     def settings_customise_sources(
@@ -84,39 +92,42 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Order the sources: init (flags), env, user config TOML, defaults.
-
-        The TOML source is a `TomlConfigSettingsSource` over `config_file_path()`. A missing
-        file is normal, not an error -- most miners will never write one.
-        """
-        raise NotImplementedError
-
-
-def config_file_path() -> Path:
-    """`config.toml` under the platform user-config directory.
-
-    A user-level file rather than a `.env` in the working directory: this is a globally
-    installed tool, and which directory it happens to run from should not change where it
-    submits.
-    """
-    raise NotImplementedError
-
-
-def cache_dir_for(api_base_url: str) -> Path:
-    """The cache directory, resolved the way `Settings` resolves it.
-
-    Exists so the completion callback can find the cache without constructing `Settings`:
-    completion runs before any command body, must not validate configuration, and must not
-    raise.
-    """
-    raise NotImplementedError
+        return (
+            init_settings,
+            env_settings,
+            TomlConfigSettingsSource(settings_cls, toml_file=config_file_path()),
+        )
 
 
 def load(**overrides: Any) -> Settings:
-    """Build `Settings`, letting explicitly-supplied flags win.
+    """Build `Settings`; `None` overrides are dropped so an unset flag cannot outrank the env."""
+    supplied = {name: value for name, value in overrides.items() if value is not None}
+    try:
+        return Settings(**supplied)
+    except ValidationError as exc:
+        raise ConfigError(_explain(exc)) from exc
 
-    `overrides` comes from the root callback's typer options. Entries whose value is `None`
-    are dropped before construction -- that is what keeps an unspecified flag from
-    outranking the environment.
-    """
-    raise NotImplementedError
+
+def describe(settings: Settings, overrides: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every effective setting with the layer it came from -- the "why is it submitting there"."""
+    from_file = read_config_file()
+    rows = []
+    for name in type(settings).model_fields:
+        if name in overrides and overrides[name] is not None:
+            source = "flag"
+        elif os.environ.get(f"{ENV_PREFIX}{name.upper()}") is not None:
+            source = "environment"
+        elif name in from_file:
+            source = "config file"
+        else:
+            source = "default"
+        rows.append({"setting": name, "value": getattr(settings, name), "source": source})
+    return rows
+
+
+def _explain(exc: ValidationError) -> str:
+    lines = []
+    for error in exc.errors():
+        field = ".".join(str(part) for part in error["loc"]) or "settings"
+        lines.append(f"{field}: {error['msg']}")
+    return "invalid configuration -- " + "; ".join(lines)

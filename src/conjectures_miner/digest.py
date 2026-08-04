@@ -1,29 +1,37 @@
-"""The byte-exact digests the validator expects. Stdlib only, deliberately.
-
-This module is a contract, not a convenience. `request_digest` must stay byte-identical to
-`conjectures_subnet.db.submissions.canonical_request_digest` in the validator: sorted keys,
-no whitespace, one trailing newline. A discrepancy is not a crash -- it is a
-`SIGNATURE_INVALID` returned after the miner has already paid.
-
-Two consequences for how this file is written:
-
-- **No third-party imports.** It must be auditable and testable without bittensor, httpx, or
-  pydantic in the environment.
-- **No behaviour beyond the bytes.** No settings, no I/O, no logging. Everything it needs
-  arrives as an argument.
-
-Covered by golden vectors in `tests/vectors/`, generated from the validator. Regenerate them
-against a known validator commit rather than editing an expectation by hand.
-"""
+"""The byte-exact digests the validator expects. Stdlib only, and a contract: see tests/vectors."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
+
 READ_DOMAIN = "conjectures-read-v1"
+PREFIX = "sha256:"
 
 
 def sha256_prefixed(data: bytes) -> str:
-    """`sha256:<64 lowercase hex>` -- the digest form used everywhere in the API."""
-    raise NotImplementedError
+    return PREFIX + hashlib.sha256(data).hexdigest()
+
+
+def to_bytes(prefixed: str) -> bytes:
+    """The 32 raw bytes behind a `sha256:<hex>` digest -- what actually gets signed."""
+    return bytes.fromhex(prefixed.removeprefix(PREFIX))
+
+
+def is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith(PREFIX)
+        and all(char in "0123456789abcdef" for char in value[len(PREFIX) :])
+    )
+
+
+def canonical_json(value: Any) -> bytes:
+    """Sorted keys, no whitespace, one trailing newline. Every one of those is load-bearing."""
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (encoded + "\n").encode("utf-8")
 
 
 def request_digest(
@@ -35,18 +43,21 @@ def request_digest(
     payment_reference: str,
     idempotency_key: str,
 ) -> str:
-    """The message a submission's hotkey signs.
-
-    Canonical JSON -- `sort_keys=True`, `separators=(",", ":")`, `ensure_ascii=False` --
-    plus exactly one trailing newline, then sha256. Every one of those is load-bearing.
-    """
-    raise NotImplementedError
+    """The message a submission's hotkey signs."""
+    return sha256_prefixed(
+        canonical_json(
+            {
+                "hotkey": hotkey,
+                "idempotency_key": idempotency_key,
+                "payment_reference": payment_reference,
+                "proof_sha256": proof_sha256,
+                "task_bundle_sha256": task_bundle_sha256,
+                "task_id": task_id,
+            }
+        )
+    )
 
 
 def read_message(*, hotkey_ss58: str, submission_id: str) -> bytes:
-    """The message a status or report read signs.
-
-    A different scheme from `request_digest`: `sha256(f"{READ_DOMAIN}:{ss58}:{id}")`, signed
-    raw. Easy to conflate with the submit path; they are not interchangeable.
-    """
-    raise NotImplementedError
+    """The message a status or report read signs. Not interchangeable with `request_digest`."""
+    return hashlib.sha256(f"{READ_DOMAIN}:{hotkey_ss58}:{submission_id}".encode()).digest()

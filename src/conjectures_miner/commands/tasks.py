@@ -1,50 +1,84 @@
-"""`conjectures tasks` -- the public task allowlist, and the local cache of it.
-
-Unauthenticated: the pool and its digests are published. This is where a miner starts,
-because `task_id` and `task_bundle_sha256` have to be committed to in the bundle.
-
-`sync` is what lets every later command name a task by a short prefix instead of a
-71-character digest, and it is what shell completion reads. See `cache` for why the cached
-digest is never what gets committed to.
-"""
+"""`conjectures tasks` -- the public allowlist, and the local cache that gives it short names."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 import typer
 
+from conjectures_miner.cache import CachedTask, TaskCacheFile
+from conjectures_miner.commands import context
+from conjectures_miner.context import AppContext
+
 app = typer.Typer(help="Browse and cache the allowlisted tasks.", no_args_is_help=True)
+
+
+def refresh_cache(app_ctx: AppContext) -> TaskCacheFile:
+    """Fetch `GET /v1/tasks` and replace the cache. Shared with `build --refresh`."""
+    published = app_ctx.client.list_tasks()
+    cached = TaskCacheFile(
+        api_base_url=app_ctx.settings.api_root,
+        repository_commit=published.repository_commit,
+        fetched_at=datetime.now(UTC),
+        bundle_format=published.bundle_format,
+        max_bundle_bytes=published.max_bundle_bytes,
+        submission_price_rao=published.submission_price_rao,
+        payment_recipient=published.payment_recipient,
+        tasks=tuple(
+            CachedTask(
+                task_id=task.task_id,
+                task_bundle_sha256=task.task_bundle_sha256,
+                target_type_sha256s=task.target_type_sha256s,
+            )
+            for task in published.tasks
+        ),
+    )
+    app_ctx.cache.save(cached)
+    return cached
 
 
 @app.command("sync")
 def sync(ctx: typer.Context) -> None:
-    """Fetch `GET /v1/tasks` and replace the local cache.
-
-    Reports how many tasks were stored and the `repository_commit` they belong to. Run it
-    after a pin rotation, or whenever `conjectures status` says the cache is behind.
-    """
+    """Fetch the allowlist and replace the local cache."""
+    app_ctx = context(ctx)
+    cached = refresh_cache(app_ctx)
+    app_ctx.render.data(
+        {
+            "tasks": len(cached.tasks),
+            "repository_commit": cached.repository_commit,
+            "submission_price_rao": cached.submission_price_rao,
+            "cache": str(app_ctx.cache.path),
+        },
+        title="synced",
+    )
 
 
 @app.command("list")
 def list_tasks(
     ctx: typer.Context,
-    refresh: Annotated[
-        bool, typer.Option("--refresh", help="Sync first, then list.")
-    ] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Sync first, then list.")] = False,
     filter_: Annotated[
-        str | None,
-        typer.Option("--filter", help="Show only task ids containing this substring."),
+        str | None, typer.Option("--filter", help="Show only task ids containing this.")
     ] = None,
-    limit: Annotated[
-        int | None, typer.Option(help="Show only the first N tasks.")
-    ] = None,
+    limit: Annotated[int | None, typer.Option(help="Show only the first N tasks.")] = None,
 ) -> None:
-    """List tasks from the cache, and say how old it is.
+    """List tasks from the cache. Reads no network, so it is fast and works offline."""
+    app_ctx = context(ctx)
+    cached = refresh_cache(app_ctx) if refresh else app_ctx.cache.require()
 
-    Reads the cache rather than the network, so it is fast and works offline. An empty cache
-    is reported as "run `conjectures tasks sync`", not as an error.
-    """
+    tasks = [task for task in cached.tasks if not filter_ or filter_ in task.task_id]
+    app_ctx.render.note(
+        f"{len(tasks)} of {len(cached.tasks)} tasks, cached {_age(app_ctx)} at commit "
+        f"{cached.repository_commit[:12]}"
+    )
+    app_ctx.render.data(
+        [
+            {"task_id": task.task_id, "task_bundle_sha256": task.task_bundle_sha256}
+            for task in tasks[:limit]
+        ],
+        title="tasks",
+    )
 
 
 @app.command("show")
@@ -52,15 +86,25 @@ def show_task(
     ctx: typer.Context,
     task: Annotated[str, typer.Argument(help="Task id, or a unique prefix of one.")],
     refresh: Annotated[
-        bool,
-        typer.Option(
-            "--refresh", help="Read `GET /v1/tasks/{id}` instead of the cache."
-        ),
+        bool, typer.Option("--refresh", help="Read the task from the validator, not the cache.")
     ] = False,
 ) -> None:
-    """Show one task's published commitment.
+    """Show one task's published commitment, and say where the digest came from."""
+    app_ctx = context(ctx)
+    resolved = app_ctx.cache.resolve(task)
+    if refresh:
+        published = app_ctx.client.read_task(resolved.task_id)
+        app_ctx.render.data(published, title="task (live)")
+        return
+    app_ctx.render.note(f"from the cache, synced {_age(app_ctx)}")
+    app_ctx.render.data(resolved, title="task")
 
-    The digest is labelled with where it came from and how old it is, because a cached one
-    is for reading and a fresh one is for committing to. Ambiguous input prints the
-    candidates.
-    """
+
+def _age(app_ctx: AppContext) -> str:
+    seconds = app_ctx.cache.age_seconds()
+    if seconds is None:
+        return "never"
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            return f"{seconds / size:.0f}{unit} ago"
+    return "just now"

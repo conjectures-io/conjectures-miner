@@ -1,93 +1,150 @@
-"""The validator client. One method per endpoint, no rendering, no key handling.
+"""The validator client. One method per endpoint, no rendering, and it never sees a keypair.
 
-Signed headers arrive from `signing`; this module never sees a keypair. Every non-2xx is
-translated into an `ApiError` by `errors.translate`, so no command has to inspect a status
-code.
-
-Retries: idempotent reads may be retried freely. `POST /v1/submissions` may be retried
-**only with the same idempotency key**, which is why the key is resolved and persisted
-before the first attempt.
+Idempotent reads may be retried freely. `POST /v1/submissions` may be retried only with the same
+idempotency key, which is why the key is resolved and persisted before the first attempt.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 import httpx
+from pydantic import ValidationError
 
 from conjectures_miner.api import models
+from conjectures_miner.bundle import BUNDLE_MEDIA_TYPE
+from conjectures_miner.errors import CliError, TransportError, api_error
 from conjectures_miner.settings import Settings
 
 
 class ApiClient:
-    """A configured `httpx.Client` and the eight calls the MVP makes."""
+    def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None) -> None:
+        self._upload_timeout = settings.upload_timeout_seconds
+        self._http = httpx.Client(
+            base_url=settings.api_root,
+            timeout=settings.request_timeout_seconds,
+            transport=transport,
+            headers={"User-Agent": _user_agent()},
+            follow_redirects=True,
+        )
 
-    def __init__(
-        self, settings: Settings, transport: httpx.BaseTransport | None = None
-    ) -> None:
-        """`transport` exists for tests; production passes nothing."""
+    def close(self) -> None:
+        self._http.close()
 
-    def __enter__(self) -> Self: ...
+    def __enter__(self) -> Self:
+        return self
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
-    ) -> None: ...
+    ) -> None:
+        self.close()
 
-    # --- public reads, no auth -----------------------------------------------------------
+    # --- public reads, no auth ----------------------------------------------------------
 
     def list_tasks(self) -> models.TaskList:
-        """`GET /v1/tasks` -- the allowlist, plus price and payment recipient."""
-        raise NotImplementedError
+        return self._call("GET", "/v1/tasks", model=models.TaskList)
 
     def read_task(self, task_id: str) -> models.TaskSummary:
-        """`GET /v1/tasks/{task_id}`."""
-        raise NotImplementedError
+        return self._call("GET", f"/v1/tasks/{task_id}", model=models.TaskSummary)
 
     def system_status(self) -> models.SystemStatus:
-        """`GET /v1/system/status` -- `submissions_open`, pin rotation window, banner."""
-        raise NotImplementedError
+        return self._call("GET", "/v1/system/status", model=models.SystemStatus)
 
-    # --- preflight: free, unauthenticated, and the MVP's stand-in for local checking ------
+    # --- preflight: free, unauthenticated, charges nothing ------------------------------
 
     def preflight(
-        self, *, bundle: Path, task_id: str, task_bundle_sha256: str, hotkey_ss58: str
+        self, *, archive: bytes, task_id: str, task_bundle_sha256: str, hotkey_ss58: str
     ) -> models.PreflightResult:
-        """`POST /v1/submissions/preflight`.
-
-        Runs the same admission the paid path runs, charges nothing, and needs only the
-        hotkey's address. Always answers 200: a refusal comes back as `ok: false` with a
-        reason code and, when the failure has one, a line and column.
-        """
-        raise NotImplementedError
+        return self._call(
+            "POST",
+            "/v1/submissions/preflight",
+            model=models.PreflightResult,
+            content=archive,
+            timeout=self._upload_timeout,
+            headers={
+                "Content-Type": BUNDLE_MEDIA_TYPE,
+                "X-Conjectures-Task-Id": task_id,
+                "X-Conjectures-Task-Sha256": task_bundle_sha256,
+                "X-Conjectures-Hotkey": hotkey_ss58,
+            },
+        )
 
     # --- the paid path -------------------------------------------------------------------
 
-    def submit(
-        self, *, bundle: Path, headers: dict[str, str]
-    ) -> models.SubmissionStatus:
-        """`POST /v1/submissions`, bundle streamed as the raw body.
-
-        `headers` must already carry the signature, the idempotency key, and the task,
-        proof, and payment references.
-        """
-        raise NotImplementedError
+    def submit(self, *, archive: bytes, headers: dict[str, str]) -> models.SubmissionStatus:
+        return self._call(
+            "POST",
+            "/v1/submissions",
+            model=models.SubmissionStatus,
+            content=archive,
+            headers={"Content-Type": BUNDLE_MEDIA_TYPE, **headers},
+            timeout=self._upload_timeout,
+        )
 
     def read_submission(
         self, submission_id: str, *, headers: dict[str, str]
     ) -> models.SubmissionStatus:
-        """`GET /v1/submissions/{id}` -- payment, verification, review, reward state."""
-        raise NotImplementedError
+        return self._call(
+            "GET",
+            f"/v1/submissions/{submission_id}",
+            model=models.SubmissionStatus,
+            headers=headers,
+        )
 
-    def read_report(
-        self, submission_id: str, *, headers: dict[str, str]
-    ) -> models.Report:
-        """`GET /v1/submissions/{id}/report`.
+    def read_report(self, submission_id: str, *, headers: dict[str, str]) -> models.Report:
+        return self._call(
+            "GET",
+            f"/v1/submissions/{submission_id}/report",
+            model=models.Report,
+            headers=headers,
+        )
 
-        The immutable verifier report, available once verification finishes.
-        """
-        raise NotImplementedError
+    # --- transport ------------------------------------------------------------------------
+
+    def _call[T: models.Model](
+        self,
+        method: str,
+        path: str,
+        *,
+        model: type[T],
+        content: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> T:
+        try:
+            response = self._http.request(
+                method,
+                path,
+                content=content,
+                headers=headers,
+                timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+            )
+        except httpx.HTTPError as exc:
+            raise TransportError(f"could not reach {self._http.base_url}: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise api_error(response.status_code, _body(response))
+        try:
+            return model.model_validate(_body(response))
+        except ValidationError as exc:
+            raise CliError(
+                f"the validator answered {path} in a shape this CLI does not understand",
+                hint=f"Upgrade conjectures-miner. ({exc.error_count()} unexpected fields)",
+            ) from exc
+
+
+def _body(response: httpx.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _user_agent() -> str:
+    from conjectures_miner import __version__
+
+    return f"conjectures-miner/{__version__}"
