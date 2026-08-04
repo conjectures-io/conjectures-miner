@@ -51,6 +51,10 @@ class ApiClient:
     def read_task(self, task_id: str) -> models.TaskSummary:
         return self._call("GET", f"/v1/tasks/{task_id}", model=models.TaskSummary)
 
+    def read_conjecture(self, task_id: str) -> models.Conjecture:
+        """The catalog entry. Keyed by task id: the website and a bundle name the same object."""
+        return self._call("GET", f"/v1/catalog/conjectures/{task_id}", model=models.Conjecture)
+
     def system_status(self) -> models.SystemStatus:
         return self._call("GET", "/v1/system/status", model=models.SystemStatus)
 

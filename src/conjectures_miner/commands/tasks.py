@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from conjectures_miner.cache import CachedTask, TaskCacheFile
+from conjectures_miner.cache import CachedTask, TaskCacheFile, complete_task_id
 from conjectures_miner.commands import context
 from conjectures_miner.context import AppContext
+from conjectures_miner.errors import CliError
 
 app = typer.Typer(help="Browse and cache the allowlisted tasks.", no_args_is_help=True)
+
+# Relative, so the statement lands beside the proof being written rather than in a cache
+# directory. One sub-directory per task: a miner works on several, and they must not collide.
+DEFAULT_CHALLENGE_DIR = Path("challenges")
+CHALLENGE_NAME = "Challenge.lean"
 
 
 def refresh_cache(app_ctx: AppContext) -> TaskCacheFile:
@@ -98,6 +105,52 @@ def show_task(
         return
     app_ctx.render.note(f"from the cache, synced {_age(app_ctx)}")
     app_ctx.render.data(resolved, title="task")
+
+
+@app.command("challenge")
+def challenge(
+    ctx: typer.Context,
+    task: Annotated[
+        str,
+        typer.Argument(help="Task id, or a unique prefix of one.", autocompletion=complete_task_id),
+    ],
+    directory: Annotated[
+        Path, typer.Option("--dir", help="Where to save it. A sub-directory per task.")
+    ] = DEFAULT_CHALLENGE_DIR,
+) -> None:
+    """Save a task's `Challenge.lean` -- the statement a proof has to close."""
+    app_ctx = context(ctx)
+    resolved = app_ctx.cache.resolve(task)
+    conjecture = app_ctx.client.read_conjecture(resolved.task_id)
+
+    destination = directory / resolved.task_id / CHALLENGE_NAME
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        # Bytes, not text: these are the bytes hashed into the published commitment, and text
+        # mode would rewrite the line endings of some of them.
+        destination.write_bytes(conjecture.challenge_lean.encode("utf-8"))
+    except OSError as exc:
+        raise CliError(f"could not write {destination}: {exc}") from exc
+
+    app_ctx.render.data(
+        {
+            "task_id": conjecture.slug,
+            # `counterexample` means the target is the negation of the statement below.
+            "task_mode": conjecture.task_mode,
+            "target_theorem": conjecture.machine_contract.target_theorem,
+            "statement": conjecture.statement,
+            "challenge": str(destination),
+        },
+        title=conjecture.title,
+    )
+    if conjecture.machine_contract.task_bundle_sha256 != resolved.task_bundle_sha256:
+        app_ctx.render.note(
+            "[yellow]The catalog and the cache disagree on this task's digest. "
+            "Run `conjectures tasks sync` before building.[/]"
+        )
+    app_ctx.render.note(
+        "Prove it in a Main.lean of your own: declarations only, no imports and no namespace."
+    )
 
 
 def _age(app_ctx: AppContext) -> str:

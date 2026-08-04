@@ -114,7 +114,7 @@ def _rows_table(rows: Sequence[Any], title: str | None) -> Table:
 def _pairs_table(pairs: Mapping[str, Any], title: str | None) -> Table:
     table = Table(title=title, title_justify="left", show_header=False, box=None)
     table.add_column(style="dim")
-    table.add_column()
+    table.add_column(overflow="fold")
     for key, value in pairs.items():
         table.add_row(str(key).replace("_", " "), _cell(value))
     return table

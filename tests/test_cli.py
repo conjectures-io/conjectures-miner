@@ -15,10 +15,12 @@ from conjectures_miner import digest, plan, signing
 from conjectures_miner.cli import app
 from tests.conftest import (
     API,
+    CHALLENGE,
     HOTKEY,
     PROOF,
     TASK_DIGEST,
     TASK_ID,
+    conjecture_response,
     read_manifest,
     task_list_response,
 )
@@ -73,6 +75,42 @@ def submission_response(submission_id: str) -> dict:
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
     }
+
+
+def test_the_challenge_is_saved_byte_for_byte_in_a_directory_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock
+):
+    httpx_mock.add_response(url=f"{API}/v1/tasks", json=task_list_response())
+    httpx_mock.add_response(
+        url=f"{API}/v1/catalog/conjectures/{TASK_ID}", json=conjecture_response()
+    )
+    succeed("tasks", "sync")
+    monkeypatch.chdir(tmp_path)
+
+    saved = succeed("tasks", "challenge", "erdos89")
+
+    assert saved["challenge"] == str(Path("challenges") / TASK_ID / "Challenge.lean")
+    assert (tmp_path / saved["challenge"]).read_bytes() == CHALLENGE.encode("utf-8")
+    # What you are proving, and which way round: `counterexample` wants the negation.
+    assert saved["task_mode"] == "formalized"
+    assert saved["target_theorem"] == "Bounty.target"
+
+
+def test_the_challenge_says_when_the_catalog_and_the_cache_disagree(
+    tmp_path: Path, httpx_mock: HTTPXMock
+):
+    httpx_mock.add_response(url=f"{API}/v1/tasks", json=task_list_response())
+    httpx_mock.add_response(
+        url=f"{API}/v1/catalog/conjectures/{TASK_ID}",
+        json=conjecture_response(task_bundle_sha256="sha256:" + "b" * 64),
+    )
+    succeed("tasks", "sync")
+
+    result = invoke("tasks", "challenge", TASK_ID, "--dir", str(tmp_path / "elsewhere"))
+
+    assert result.exit_code == 0
+    assert (tmp_path / "elsewhere" / TASK_ID / "Challenge.lean").is_file()
+    assert "tasks sync" in result.stderr
 
 
 def test_build_is_offline_and_names_the_task_by_prefix(

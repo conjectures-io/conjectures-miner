@@ -17,6 +17,11 @@ HOTKEY = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
 TASK_ID = "fc-379fc029-erdos89-erdos-89-c956ed476a-formalized-v1"
 TASK_DIGEST = "sha256:" + "a" * 64
 PROOF = b"theorem target : True := trivial\n"
+# Non-ASCII on purpose: a module name carries guillemets, and the saved file has to keep them.
+CHALLENGE = (
+    "import FormalConjectures.ErdosProblems.«89»\n\nnamespace Bounty\n\n"
+    'theorem target : fcTypeOfName% "Erdos89.erdos_89" := by\n  sorry\n\nend Bounty\n'
+)
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +78,22 @@ def task_list_response(commit: str = "379fc029", tasks: list[str] | None = None)
             {"task_id": task_id, "task_bundle_sha256": TASK_DIGEST, "target_type_sha256s": []}
             for task_id in (tasks or [TASK_ID])
         ],
+    }
+
+
+def conjecture_response(task_bundle_sha256: str = TASK_DIGEST) -> dict:
+    return {
+        "slug": TASK_ID,
+        "title": "Erdos89.erdos_89",
+        "statement": "minimalDistinctDistances is not O(n / sqrt(log n))",
+        "task_mode": "formalized",
+        "challenge_lean": CHALLENGE,
+        "machine_contract": {
+            "task_id": TASK_ID,
+            "task_bundle_sha256": task_bundle_sha256,
+            "target_theorem": "Bounty.target",
+        },
+        "repository_commit": "379fc029",
     }
 
 

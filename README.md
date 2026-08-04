@@ -31,11 +31,13 @@ conjectures tasks list --filter erdos
 conjectures tasks show erdos89
 ```
 
-**3. Write the proof.** The statement is public, and served from the same bytes that are hashed
-into the published `task_bundle_sha256`:
+**3. Write the proof.** `challenge` saves the statement to `challenges/<task_id>/Challenge.lean`
+(`--dir` puts it elsewhere), and prints what you are proving -- in particular `task_mode`, since a
+`counterexample` task wants the negation. Those are the same bytes that are hashed into the
+published `task_bundle_sha256`.
 
 ```bash
-curl -s http://<validator-host>:8000/v1/catalog/conjectures/<task_id> | jq -r .challenge_lean
+conjectures tasks challenge erdos89
 ```
 
 Your `Main.lean` holds the declarations only. It is inserted between a trusted header and footer

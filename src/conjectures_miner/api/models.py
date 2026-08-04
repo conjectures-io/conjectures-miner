@@ -33,6 +33,28 @@ class TaskList(Model):
     tasks: tuple[TaskSummary, ...]
 
 
+class MachineContract(Model):
+    task_id: str
+    task_bundle_sha256: str
+    target_theorem: str
+
+
+class Conjecture(Model):
+    """A task's public statement, and the Lean a proof is compiled against.
+
+    `challenge_lean` is the exact `Challenge.lean` whose bytes are hashed into the published
+    `task_bundle_sha256`, so it can be checked against the commitment rather than trusted.
+    """
+
+    slug: str
+    title: str
+    statement: str
+    task_mode: str
+    challenge_lean: str
+    machine_contract: MachineContract
+    repository_commit: str
+
+
 class QueueDepths(Model):
     awaiting_verification: int
     awaiting_review: int
