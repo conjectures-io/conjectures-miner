@@ -18,7 +18,6 @@ installing Tab completion for your shell. `PREFIX=/somewhere ./install.sh` puts 
 **1. Point it at a validator.**
 
 ```bash
-conjectures config set api_base_url http://<validator-host>:8000
 conjectures status                    # accepting work? queues? banner?
 conjectures tasks sync                # cache the allowlist; short names + completion
 ```
@@ -57,7 +56,6 @@ Also refused: `sorry`, `admit`, `axiom`, `set_option`, `native_decide`, `instanc
 ```bash
 conjectures config set wallet_name my-wallet
 conjectures config set wallet_hotkey my-hotkey
-conjectures config set bittensor_network finney     # or test, local, or a ws:// endpoint
 ```
 
 Names only. No key material belongs in the config file, the environment, or the bundle. The
