@@ -8,7 +8,10 @@ BIN=${BIN:-${PREFIX:-$HOME/.local}/bin}
 VENV=${VENV:-${PREFIX:-$HOME/.local}/share/conjectures-miner}
 
 if command -v uv >/dev/null 2>&1; then
-    UV_TOOL_BIN_DIR=$BIN uv tool install --force "$SOURCE"
+    # `--refresh-package` is not optional: the version does not change between builds, so uv
+    # otherwise reinstalls the wheel it cached the first time and the install silently lands a
+    # revision old. `--force` replaces the tool; it does not rebuild it.
+    UV_TOOL_BIN_DIR=$BIN uv tool install --force --refresh-package conjectures-miner "$SOURCE"
 else
     PY=$(command -v python3.14 || command -v python3.13 || command -v python3.12 ||
         command -v python3) || {
