@@ -25,7 +25,7 @@ from conjectures_miner.errors import ConfigError
 
 # Placeholder until the production host is confirmed -- the validator docs name it only as
 # $CONJECTURES_API.
-DEFAULT_API_BASE_URL = "https://api.conjectures.io"
+DEFAULT_API_BASE_URL = "https://conjectures.io"
 
 APP_NAME = "conjectures"
 ENV_PREFIX = "CONJECTURES_"
