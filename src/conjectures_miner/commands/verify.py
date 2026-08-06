@@ -210,18 +210,17 @@ def _locate(app_ctx: AppContext, where: Paths, *, task_id: str, digest: str) -> 
     elif task_id not in allowed:
         raise TaskNotVerifiableError(
             f"{task_id} is not in the task pool this verifier was built against",
-            hint="It has most likely been retired. `conjectures tasks sync` shows the current "
-            "pool; if it is still listed there, the local pool is behind -- run "
-            "`conjectures verify --setup` to move it forward.",
+            hint=_absent_task_hint(app_ctx, task_id),
         )
     elif allowed[task_id] != digest:
         raise VerifierError(
             f"{task_id} does not have the digest you asked for:\n"
             f"  the pinned pool has {allowed[task_id]}\n"
             f"  you asked for       {digest}",
-            hint="The task pool moved under one of you. `conjectures verify --setup` refreshes "
-            "the checkout; if that changes nothing, the validator's pin is behind the pool it "
-            "serves and verifying locally cannot agree with it yet.",
+            hint="The pool this verifier is pinned to and the one that digest came from are not "
+            "the same. `conjectures tasks sync`, then `conjectures verify --setup`, brings both "
+            "ends up to date; if they still disagree after that, the validator is serving a pool "
+            "its own pin has not caught up with and local verification cannot match it yet.",
         )
     found = verifier_module.find_task(where, task_id)
     if found is None:
@@ -230,6 +229,30 @@ def _locate(app_ctx: AppContext, where: Paths, *, task_id: str, digest: str) -> 
             hint="The tasks checkout is incomplete. Re-run `conjectures verify --setup`.",
         )
     return found
+
+
+def _absent_task_hint(app_ctx: AppContext, task_id: str) -> str:
+    """Retired, or still served and merely unpinned -- the same refusal, and different advice.
+
+    The verifier's pool comes from the validator's own `pins.lock.json`, so it can disagree with the
+    pool the API serves in either direction. Telling a miner to re-run `--setup` for a task the pin
+    has dropped sends them round a loop that cannot terminate, so the cached task list decides which
+    of the two this is.
+    """
+    cached = app_ctx.cache.load()
+    if cached is None:
+        return (
+            "Run `conjectures tasks sync`, then `conjectures tasks list`: if it is no longer "
+            "offered it was retired, and if it still is, it is the pinned pool that dropped it."
+        )
+    if cached.get(task_id) is None:
+        return "The validator no longer offers it either, so it has been retired. Pick another."
+    return (
+        "The validator still offers this task, so it is not retired: the pool this verifier is "
+        "pinned to and the pool being served disagree. Nothing local can reach it until the "
+        "validator's pin moves, and `conjectures verify --setup` picks that up once it is "
+        "published. Other tasks are unaffected."
+    )
 
 
 def _report(app_ctx: AppContext, where: Paths) -> None:

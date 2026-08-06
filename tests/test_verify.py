@@ -18,6 +18,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,9 @@ import pytest
 from typer.testing import CliRunner
 
 from conjectures_miner import verifier
+from conjectures_miner.cache import TaskCache, TaskCacheFile
 from conjectures_miner.cli import app
-from tests.conftest import TASK_DIGEST, TASK_ID
+from tests.conftest import API, TASK_DIGEST, TASK_ID, task_list_response
 
 runner = CliRunner()
 GIT = shutil.which("git") or "git"
@@ -395,6 +397,46 @@ def test_a_retired_task_is_refused_before_the_verifier_is_started(ready: Path, p
     assert not ready.exists()
 
 
+@pytest.mark.usefixtures("ready")
+def test_a_task_the_validator_still_offers_is_not_reported_as_retired(proof_file: Path):
+    """The pin can drop a task the API is still serving, and re-running `--setup` cannot fix that.
+
+    Observed against production on 2026-08-06: 292 tasks served, 280 in the pool the branch pins.
+    """
+    _seed_cache("fc-gone-v1")
+
+    error = _refusal(
+        "verify", "--proof", str(proof_file), "--task", "fc-gone-v1", "--task-sha256", TASK_DIGEST
+    )
+
+    assert "still offers this task" in getattr(error, "hint", "")
+
+
+@pytest.mark.usefixtures("ready")
+def test_a_task_the_validator_has_dropped_too_is_reported_as_retired(proof_file: Path):
+    _seed_cache(TASK_ID)
+
+    error = _refusal(
+        "verify", "--proof", str(proof_file), "--task", "fc-gone-v1", "--task-sha256", TASK_DIGEST
+    )
+
+    assert "has been retired" in getattr(error, "hint", "")
+
+
+def test_a_task_named_without_a_digest_is_resolved_through_the_cache(
+    ready: Path, isolated_home: Path, proof_file: Path
+):
+    """The path a miner actually takes: a short name, and the digest coming from `tasks sync`."""
+    _seed_cache(TASK_ID)
+
+    _succeed("verify", "--proof", str(proof_file), "--task", TASK_ID[:12])
+
+    pool = isolated_home / "cache/verifier/conjectures-tasks/pool/tier-1" / TASK_SLUG
+    called = ready.read_text(encoding="utf-8")
+    assert f"--task {pool} " in called
+    assert f"--expected-task-sha256 {TASK_DIGEST}" in called
+
+
 def test_a_digest_the_pinned_pool_disagrees_with_is_refused_as_pin_drift(
     ready: Path, proof_file: Path
 ):
@@ -414,6 +456,16 @@ def test_a_digest_the_pinned_pool_disagrees_with_is_refused_as_pin_drift(
 
 
 # --- the stub upstreams ------------------------------------------------------------------------
+
+
+def _seed_cache(*task_ids: str) -> None:
+    """A `tasks sync` that already happened, so the CLI can tell retired from merely unpinned."""
+    payload = task_list_response(tasks=list(task_ids))
+    TaskCache(Path(os.environ["CONJECTURES_CACHE_DIR"]), API).save(
+        TaskCacheFile.model_validate(
+            payload | {"api_base_url": API, "fetched_at": datetime.now(UTC)}
+        )
+    )
 
 
 def _invoke(*args: str) -> Any:

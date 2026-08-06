@@ -126,8 +126,12 @@ builds the validator's own, from source, on your machine.
 ```bash
 conjectures verify --setup                          # first run: ~5 GB down, ~20 GB, half an hour
 conjectures verify                                  # what it built, and whether it is still ready
-conjectures verify --proof Main.lean --task erdos89 # is this proof correct?
+conjectures verify --proof Main.lean --task erdos89 # is this proof correct? up to an hour
 ```
+
+A proof gets the same hour the validator allows it, and the run is quiet until Lean finishes.
+Re-running `--setup` on a host that already built once takes a couple of minutes: it moves the
+checkouts to the current revision and re-checks readiness rather than rebuilding.
 
 Linux only, x86_64 or aarch64; on Windows, run it inside WSL2. On a stock Debian or Ubuntu host:
 
@@ -175,12 +179,12 @@ static-key authenticator expects instead of signing (`conjectures config set dev
 to keep it). That mode opens no private key at all -- the marker is a constant -- and a production
 validator refuses it, so the default is a real signature.
 
-`--output json` emits exactly one JSON document on stdout, so `conjectures tasks list --output
-json | jq` works. Exit codes: `1` refused, `2` bad configuration or input, `3` the validator said
-no, `4` the validator or the chain was unreachable, `5` the local verifier is missing or unfit.
-For `verify --proof`, `0` is the verifier accepting the proof and `1` is it rejecting one; every
-other code means no verdict was reached, so `verify && build` never mistakes a broken host or a
-retired task for a wrong proof.
+`--output json` emits exactly one JSON document on stdout. It is a global option, so it goes before
+the subcommand: `conjectures --output json tasks list | jq`. Exit codes: `1` refused, `2` bad
+configuration or input, `3` the validator said no, `4` the validator or the chain was unreachable,
+`5` the local verifier is missing or unfit. For `verify --proof`, `0` is the verifier accepting the
+proof and `1` is it rejecting one; every other code means no verdict was reached, so
+`verify && build` never mistakes a broken host or a retired task for a wrong proof.
 
 ## Development
 
