@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,6 +53,10 @@ TASKS_DIRECTORY = "conjectures-tasks"
 SETUP_RECORD_NAME = "setup.json"
 SETUP_SCHEMA_VERSION = 1
 
+# The checked-in task bundles, one directory per task, under `pool/<tier>/<slug>/`.
+POOL_DIRECTORY = "pool"
+ALLOWLIST_NAME = "allowlist.json"
+
 RESUMES = (
     "Fix what it reported and run `conjectures verify --setup` again -- it resumes rather than "
     "rebuilding."
@@ -62,6 +67,16 @@ class VerifierError(CliError):
     """The local verifier could not be built, or is not fit to answer."""
 
     exit_code = 5
+
+
+class TaskNotVerifiableError(CliError):
+    """This task cannot be run here at all -- retired, absent from the pool, or named wrong.
+
+    Deliberately not exit 1. That code has to mean "the verifier rejected this proof" and nothing
+    else, or a script reads a retired task as a wrong proof and the miner rewrites a correct one.
+    """
+
+    exit_code = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +115,16 @@ class Paths:
 class Checkouts:
     validator_commit: str
     tasks_commit: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBundle:
+    """A task directory in the pinned pool, and what its manifest says about running it."""
+
+    path: Path
+    task_id: str
+    task_mode: str
+    timeout_seconds: int
 
 
 class SetupRecord(BaseModel):
@@ -367,6 +392,135 @@ def summarise(report: Mapping[str, Any]) -> dict[str, Any]:
         "formal_conjectures_commit": report.get("formal_conjectures", {}).get("actual_commit"),
         "lean": lean.splitlines()[0] if lean else None,
         "missing_tools": report.get("comparator", {}).get("missing", []),
+    }
+
+
+# --- the task pool ---------------------------------------------------------------------------
+
+
+def allowed_tasks(where: Paths) -> dict[str, str] | None:
+    """Task id -> committed bundle digest, from the pinned pool's allowlist.
+
+    None when it cannot be read, which is reported rather than refused: this exists to fail a
+    retired target in two seconds instead of an hour, and the verifier is the authority either way.
+    """
+    try:
+        allowlist = json.loads((where.tasks / ALLOWLIST_NAME).read_text("utf-8"))
+        entries = allowlist["allowed_task_bundles"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return {
+        str(entry["task_id"]): str(entry["task_bundle_sha256"])
+        for entry in entries
+        if isinstance(entry, dict) and "task_id" in entry and "task_bundle_sha256" in entry
+    }
+
+
+def find_task(where: Paths, task_id: str) -> TaskBundle | None:
+    """The pool directory whose manifest carries this task id.
+
+    A scan rather than a lookup: the directories are named by slug, `allowlist.json` records no
+    path, and the manifest is the only thing connecting the two. 280 small reads.
+    """
+    for path in sorted((where.tasks / POOL_DIRECTORY).glob("*/*/manifest.json")):
+        try:
+            manifest = json.loads(path.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if manifest.get("task_id") == task_id:
+            return TaskBundle(
+                path=path.parent,
+                task_id=task_id,
+                task_mode=str(manifest.get("task_mode", "unknown")),
+                timeout_seconds=int(manifest.get("timeout_seconds", 0)),
+            )
+    return None
+
+
+def run_verification(
+    where: Paths,
+    *,
+    task: Path,
+    submission: Path,
+    expected_task_sha256: str,
+    on_line: Callable[[str], None],
+) -> tuple[int, dict[str, Any]]:
+    """Run the real verifier over one proof. Returns its exit code and the report it printed.
+
+    `--expected-task-sha256` is the whole of the digest check: the verifier compares it against the
+    bundle it loaded and refuses on a mismatch, so nothing here recomputes a task digest. The
+    timeout is the manifest's and the verifier enforces it, so nothing here imposes a second one.
+
+    stdout goes to a file rather than a pipe. The report is one JSON document on stdout and the
+    diagnostics arrive on stderr; reading both as pipes needs threads to avoid deadlocking on a
+    full buffer, and keeping stdout off the pipes is the cheaper way to stream one of them.
+    """
+    if not where.python.is_file():
+        raise VerifierError(
+            f"no verifier virtualenv at {where.python}",
+            hint="Run `conjectures verify --setup` first.",
+        )
+    command = [
+        str(where.python),
+        "-m",
+        "verifier",
+        "verify",
+        "--task",
+        str(task),
+        "--submission",
+        str(submission),
+        "--expected-task-sha256",
+        expected_task_sha256,
+        # A miner verifying their own proof is not defending against themselves. It changes the
+        # isolation, not the verdict, and every report this produces says which one it ran.
+        "--allow-insecure-development",
+    ]
+    with tempfile.TemporaryDirectory() as directory:
+        report_path = Path(directory) / "report.json"
+        with report_path.open("wb") as report_file:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=where.validator,
+                    env=_environment(where),
+                    stdout=report_file,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    errors="replace",
+                    bufsize=1,
+                )
+            except OSError as exc:
+                raise VerifierError(f"could not run the verifier: {exc}") from exc
+            stderr = process.stderr
+            assert stderr is not None  # guaranteed by stderr=PIPE, but not by the type
+            with stderr:
+                for line in stderr:
+                    on_line(line.rstrip("\n"))
+            code = process.wait()
+        raw = report_path.read_text("utf-8", errors="replace")
+    try:
+        return code, json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise VerifierError(
+            f"the verifier exited {code} without a report",
+            hint=raw.strip()[-400:] or None,
+        ) from exc
+
+
+def summarise_verdict(report: Mapping[str, Any]) -> dict[str, Any]:
+    """The fields of a verification report a miner reads first."""
+    milliseconds = report.get("duration_ms")
+    return {
+        "accepted": bool(report.get("accepted")),
+        "task_id": report.get("task_id"),
+        "task_mode": report.get("task_mode"),
+        # Where it stopped, which is the difference between a wrong proof and a broken host.
+        "stage": report.get("stage"),
+        "reason_code": report.get("reason_code"),
+        "proof_sha256": report.get("submission_sha256"),
+        "task_bundle_sha256": report.get("task_bundle_sha256"),
+        "sandbox_mode": report.get("sandbox_mode"),
+        "duration_seconds": None if milliseconds is None else round(int(milliseconds) / 1000, 1),
     }
 
 

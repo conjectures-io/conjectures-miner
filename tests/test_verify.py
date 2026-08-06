@@ -1,10 +1,13 @@
-"""`verify --setup` end to end, against a validator repository stubbed down to its interface.
+"""`verify` end to end, against a validator repository stubbed down to its interface.
 
-The stub is the two scripts the CLI actually calls -- `check_prerequisites.py --miner --json` and
-`bootstrap.sh --miner` -- plus a `pins.lock.json` and the `.gitignore` that keeps a built checkout
-looking clean. Everything the real build does in half an hour is out of scope here; what is in
-scope is that the right things are cloned at the right commits, in the right order, and that a
-second run resumes.
+The stub is what the CLI actually calls -- `check_prerequisites.py --miner --json`,
+`bootstrap.sh --miner`, and a `python -m verifier` that answers `doctor` and `verify` -- plus a
+`pins.lock.json`, a task pool and the `.gitignore` that keeps a built checkout looking clean.
+
+Everything the real build and the real Lean run do in half an hour is out of scope. What is in
+scope is what surrounds them: that the right things are cloned at the right commits, that a second
+run resumes, that the right task directory and digest reach the verifier, and that an exit code of
+1 means the proof was rejected and nothing else.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from typer.testing import CliRunner
 
 from conjectures_miner import verifier
 from conjectures_miner.cli import app
+from tests.conftest import TASK_DIGEST, TASK_ID
 
 runner = CliRunner()
 GIT = shutil.which("git") or "git"
@@ -41,7 +45,9 @@ print(json.dumps({"ready": ready, "checks": [
 sys.exit(0 if ready else 1)
 """
 
-# Prints a line rich would read as markup for a style it does not have, which is what `log` is for.
+# The verifier the build installs, standing in for `python -m verifier`. It answers `doctor` and
+# `verify` differently, records the argv it was called with, and takes its exit code from the
+# environment -- the three things the CLI's behaviour turns on.
 BOOTSTRAP = """\
 #!/usr/bin/env bash
 set -euo pipefail
@@ -51,7 +57,17 @@ echo "tasks root is ${CONJECTURES_TASKS_ROOT:?not set}"
 mkdir -p .venv/bin
 cat > .venv/bin/python <<'STUB'
 #!/usr/bin/env bash
-cat "$(dirname "$0")/../../doctor.json"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+for argument in "$@"; do
+  if [ "$argument" = "verify" ]; then
+    if [ -n "${STUB_VERIFY_ARGV:-}" ]; then printf '%s\\n' "$*" > "$STUB_VERIFY_ARGV"; fi
+    code="${STUB_VERIFY_EXIT:-0}"
+    if [ "$code" = "0" ]; then verdict=accepted; else verdict=rejected; fi
+    cat "$root/verify-$verdict.json"
+    exit "$code"
+  fi
+done
+cat "$root/doctor.json"
 STUB
 chmod +x .venv/bin/python
 """
@@ -63,6 +79,25 @@ DOCTOR: dict[str, Any] = {
     "toolchain_identity": {"lean_version": "Lean (version 4.27.0)"},
     "comparator": {"missing": []},
 }
+
+VERDICT: dict[str, Any] = {
+    "task_id": TASK_ID,
+    "task_mode": "formalized",
+    "task_bundle_sha256": TASK_DIGEST,
+    "submission_sha256": "sha256:" + "c" * 64,
+    "sandbox_mode": "development-fake-landrun",
+    "duration_ms": 91_000,
+    "stage": "COMPARE",
+    "stderr_tail": "",
+}
+ACCEPTED = VERDICT | {"accepted": True, "reason_code": "ACCEPTED"}
+REJECTED = VERDICT | {
+    "accepted": False,
+    "reason_code": "TARGET_TYPE_MISMATCH",
+    "stderr_tail": "the solution proves True, not the stated theorem",
+}
+
+TASK_SLUG = "erdos-89"
 
 
 @dataclass(frozen=True)
@@ -77,7 +112,23 @@ def upstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Upstream:
     """Two local repositories the CLI can clone, wired together the way the real ones are."""
     tasks = tmp_path / "upstream" / "conjectures-tasks"
     _init(tasks)
-    _write(tasks, {"tiers/tier-1/formal-conjectures-audit-fixes.patch": "the audited patch\n"})
+    _write(
+        tasks,
+        {
+            "tiers/tier-1/formal-conjectures-audit-fixes.patch": "the audited patch\n",
+            # Slug-named, as the real pool is: the manifest is the only thing tying it to a task id.
+            f"pool/tier-1/{TASK_SLUG}/manifest.json": json.dumps(
+                {"task_id": TASK_ID, "task_mode": "formalized", "timeout_seconds": 3600}
+            ),
+            "allowlist.json": json.dumps(
+                {
+                    "allowed_task_bundles": [
+                        {"task_id": TASK_ID, "task_bundle_sha256": TASK_DIGEST, "tier": "tier-1"}
+                    ]
+                }
+            ),
+        },
+    )
     pinned = _commit(tasks, "audited")
     # A later commit, so checking out the tip instead of the pin is a distinguishable mistake.
     _write(tasks, {"tiers/tier-1/formal-conjectures-audit-fixes.patch": "a newer patch\n"})
@@ -90,6 +141,8 @@ def upstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Upstream:
         {
             ".gitignore": ".venv/\n",
             "doctor.json": json.dumps(DOCTOR),
+            "verify-accepted.json": json.dumps(ACCEPTED),
+            "verify-rejected.json": json.dumps(REJECTED),
             "pins.lock.json": json.dumps(
                 {"tasks": {"repository": f"file://{tasks}", "commit": pinned}}
             ),
@@ -240,6 +293,124 @@ def test_a_verifier_that_reports_unready_exits_non_zero(isolated_home: Path):
 
     assert result.exit_code == 1
     assert json.loads(result.stdout)["ready"] is False
+
+
+# --- verifying a proof -------------------------------------------------------------------------
+
+
+@pytest.fixture
+def ready(
+    upstream: Upstream,  # noqa: ARG001 -- requested to build the setup these tests run against
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """A completed setup, and the argv file the stub verifier records its call in."""
+    _succeed("verify", "--setup", "--offline")
+    argv = isolated_home / "verify-argv.txt"
+    monkeypatch.setenv("STUB_VERIFY_ARGV", str(argv))
+    return argv
+
+
+def test_the_verifier_is_pointed_at_the_pool_directory_for_that_task_id(
+    ready: Path, isolated_home: Path, proof_file: Path
+):
+    """The pool is named by slug and the allowlist records no path, so this is the whole mapping."""
+    _succeed("verify", "--proof", str(proof_file), "--task", TASK_ID, "--task-sha256", TASK_DIGEST)
+
+    called = ready.read_text(encoding="utf-8")
+    pool = isolated_home / "cache/verifier/conjectures-tasks/pool/tier-1" / TASK_SLUG
+    assert f"--task {pool} " in called
+    # The digest is passed through rather than recomputed; the verifier refuses on a mismatch.
+    assert f"--expected-task-sha256 {TASK_DIGEST}" in called
+    assert "--allow-insecure-development" in called
+
+
+@pytest.mark.usefixtures("ready")
+def test_an_accepted_proof_exits_zero_and_names_the_sandbox_it_ran_under(proof_file: Path):
+    verdict = _succeed(
+        "verify", "--proof", str(proof_file), "--task", TASK_ID, "--task-sha256", TASK_DIGEST
+    )
+
+    assert verdict["accepted"] is True
+    # Not an attestation, and the report says which isolation produced it.
+    assert verdict["sandbox_mode"] == "development-fake-landrun"
+    assert verdict["duration_seconds"] == 91.0
+
+
+@pytest.mark.usefixtures("ready")
+def test_a_rejected_proof_exits_one(proof_file: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("STUB_VERIFY_EXIT", "1")
+
+    result = _invoke(
+        "verify", "--proof", str(proof_file), "--task", TASK_ID, "--task-sha256", TASK_DIGEST
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["reason_code"] == "TARGET_TYPE_MISMATCH"
+    assert "proves True, not the stated theorem" in result.stderr
+
+
+@pytest.mark.usefixtures("ready")
+def test_a_host_that_could_not_run_the_verification_does_not_exit_one(
+    proof_file: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Exit 1 has to mean the proof was rejected, or a broken host reads as a wrong proof."""
+    monkeypatch.setenv("STUB_VERIFY_EXIT", "2")
+
+    error = _refusal(
+        "verify", "--proof", str(proof_file), "--task", TASK_ID, "--task-sha256", TASK_DIGEST
+    )
+
+    assert getattr(error, "exit_code", None) == verifier.VerifierError.exit_code
+    assert "TARGET_TYPE_MISMATCH" in str(error)
+
+
+@pytest.mark.usefixtures("ready")
+def test_running_out_of_resources_is_reported_as_the_host_not_as_a_verdict(
+    isolated_home: Path, proof_file: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """RESOURCE_LIMIT is exit 1 from the verifier; on a workstation it is RLIMIT_NPROC, per user."""
+    checkout = isolated_home / "cache/verifier/conjectures-validator"
+    (checkout / "verify-rejected.json").write_text(
+        json.dumps(REJECTED | {"reason_code": "RESOURCE_LIMIT"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("STUB_VERIFY_EXIT", "1")
+
+    error = _refusal(
+        "verify", "--proof", str(proof_file), "--task", TASK_ID, "--task-sha256", TASK_DIGEST
+    )
+
+    assert getattr(error, "exit_code", None) == verifier.VerifierError.exit_code
+    assert "says nothing about the proof" in str(error)
+
+
+def test_a_retired_task_is_refused_before_the_verifier_is_started(ready: Path, proof_file: Path):
+    """Two seconds instead of an hour, and not exit 1: nothing judged this proof."""
+    error = _refusal(
+        "verify", "--proof", str(proof_file), "--task", "fc-gone-v1", "--task-sha256", TASK_DIGEST
+    )
+
+    assert getattr(error, "exit_code", None) == verifier.TaskNotVerifiableError.exit_code
+    assert "not in the task pool" in str(error)
+    assert not ready.exists()
+
+
+def test_a_digest_the_pinned_pool_disagrees_with_is_refused_as_pin_drift(
+    ready: Path, proof_file: Path
+):
+    error = _refusal(
+        "verify",
+        "--proof",
+        str(proof_file),
+        "--task",
+        TASK_ID,
+        "--task-sha256",
+        "sha256:" + "e" * 64,
+    )
+
+    assert getattr(error, "exit_code", None) == verifier.VerifierError.exit_code
+    assert "the pinned pool has" in str(error)
+    assert not ready.exists()
 
 
 # --- the stub upstreams ------------------------------------------------------------------------

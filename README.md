@@ -124,8 +124,9 @@ different question, and the only thing that answers it is the verifier itself. `
 builds the validator's own, from source, on your machine.
 
 ```bash
-conjectures verify --setup      # first run: ~5 GB downloaded, ~20 GB on disk, about half an hour
-conjectures verify              # what it built, and whether it is still ready
+conjectures verify --setup                          # first run: ~5 GB down, ~20 GB, half an hour
+conjectures verify                                  # what it built, and whether it is still ready
+conjectures verify --proof Main.lean --task erdos89 # is this proof correct?
 ```
 
 Linux only, x86_64 or aarch64; on Windows, run it inside WSL2. On a stock Debian or Ubuntu host:
@@ -138,8 +139,6 @@ The checkouts land under your cache directory; `CONJECTURES_VERIFIER_ROOT` moves
 `CONJECTURES_VERIFIER_REF` chooses which validator revision to build. Local verification runs a
 development sandbox rather than the isolation a validator applies to a proof it did not write, so
 it answers whether the proof is correct -- not whether the submission will be accepted.
-
-Running a proof through it is the next thing this command grows.
 
 ## What costs money, and what does not
 
@@ -179,6 +178,9 @@ validator refuses it, so the default is a real signature.
 `--output json` emits exactly one JSON document on stdout, so `conjectures tasks list --output
 json | jq` works. Exit codes: `1` refused, `2` bad configuration or input, `3` the validator said
 no, `4` the validator or the chain was unreachable, `5` the local verifier is missing or unfit.
+For `verify --proof`, `0` is the verifier accepting the proof and `1` is it rejecting one; every
+other code means no verdict was reached, so `verify && build` never mistakes a broken host or a
+retired task for a wrong proof.
 
 ## Development
 
