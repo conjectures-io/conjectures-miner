@@ -77,6 +77,9 @@ exits non-zero on a refusal, so `conjectures check && conjectures pay` is safe t
 conjectures check
 ```
 
+It is a question about the envelope, not about the proof. For the proof itself, see
+[a verifier of your own](#a-verifier-of-your-own).
+
 **7. Pay.** `pay` takes the treasury address and the exact price from the validator, asks the
 chain whether your coldkey owns the submitting hotkey -- the validator requires that, and it only
 checks *after* the money has moved -- sends the transfer, follows it to finality, and records the
@@ -113,6 +116,30 @@ appears once it finishes.
 conjectures submissions show <id> --watch
 conjectures submissions report <id>
 ```
+
+## A verifier of your own
+
+`check` asks the validator whether the envelope is acceptable. Whether the *proof* is correct is a
+different question, and the only thing that answers it is the verifier itself. `verify --setup`
+builds the validator's own, from source, on your machine.
+
+```bash
+conjectures verify --setup      # first run: ~5 GB downloaded, ~20 GB on disk, about half an hour
+conjectures verify              # what it built, and whether it is still ready
+```
+
+Linux only, x86_64 or aarch64; on Windows, run it inside WSL2. On a stock Debian or Ubuntu host:
+
+```bash
+sudo apt install -y git curl ca-certificates python3 python3-venv zstd
+```
+
+The checkouts land under your cache directory; `CONJECTURES_VERIFIER_ROOT` moves them and
+`CONJECTURES_VERIFIER_REF` chooses which validator revision to build. Local verification runs a
+development sandbox rather than the isolation a validator applies to a proof it did not write, so
+it answers whether the proof is correct -- not whether the submission will be accepted.
+
+Running a proof through it is the next thing this command grows.
 
 ## What costs money, and what does not
 
@@ -151,7 +178,7 @@ validator refuses it, so the default is a real signature.
 
 `--output json` emits exactly one JSON document on stdout, so `conjectures tasks list --output
 json | jq` works. Exit codes: `1` refused, `2` bad configuration or input, `3` the validator said
-no, `4` the validator or the chain was unreachable.
+no, `4` the validator or the chain was unreachable, `5` the local verifier is missing or unfit.
 
 ## Development
 

@@ -46,6 +46,15 @@ class Renderer:
         """A warning or a progress line. Stderr even in JSON mode: `| jq` reads stdout only."""
         self._err.print(message)
 
+    def log(self, line: str) -> None:
+        """A line printed exactly as given: no markup, no highlighting.
+
+        For subprocess output, which is full of `[3/7922]` -- rich reads that as markup for a
+        style it does not have -- and for any line carrying a path, a ref or anything else this
+        tool did not choose the characters of.
+        """
+        self._err.print(line, markup=False, highlight=False)
+
     def failure(self, error: BaseException) -> None:
         if self._json:
             print(_dumps(_problem(error)), file=sys.stderr)
