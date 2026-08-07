@@ -27,6 +27,12 @@ from conjectures_miner.errors import ConfigError
 # $CONJECTURES_API.
 DEFAULT_API_BASE_URL = "https://conjectures.io"
 
+# The validator repository a local verifier is built from, and the ref to build. The ref decides
+# only which revision of the verifier source runs: `pins.lock.json` travels with it and is what
+# fixes every dependency. `--ref` and CONJECTURES_VERIFIER_REF override it.
+DEFAULT_VERIFIER_REPOSITORY = "https://github.com/conjectures-io/conjectures-validator.git"
+DEFAULT_VERIFIER_REF = "main"
+
 APP_NAME = "conjectures"
 ENV_PREFIX = "CONJECTURES_"
 CONFIG_FILE_ENV = f"{ENV_PREFIX}CONFIG_FILE"
@@ -86,11 +92,23 @@ class Settings(BaseSettings):
     state_dir: Path = Field(default_factory=lambda: Path(platformdirs.user_state_dir(APP_NAME)))
     cache_max_age_seconds: float = 24 * 60 * 60
 
+    # `conjectures verify --setup` builds the validator's own verifier from source. Only the ref
+    # is configured: the pins that decide a verdict travel with the code, so choosing the ref is
+    # choosing all of them. Under `cache_dir` because it is 20 GB that a re-run rebuilds.
+    verifier_repository: str = DEFAULT_VERIFIER_REPOSITORY
+    verifier_ref: str = DEFAULT_VERIFIER_REF
+    verifier_root: Path | None = None
+
     output_format: OutputFormat = "auto"
 
     @property
     def api_root(self) -> str:
         return self.api_base_url.rstrip("/")
+
+    @property
+    def verifier_home(self) -> Path:
+        """Where the validator and tasks checkouts live, as siblings."""
+        return self.verifier_root or self.cache_dir / "verifier"
 
     @classmethod
     def settings_customise_sources(

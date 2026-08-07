@@ -13,7 +13,7 @@ import typer
 
 from conjectures_miner import __version__
 from conjectures_miner import settings as settings_module
-from conjectures_miner.commands import config, pay, submissions, submit, system, tasks
+from conjectures_miner.commands import config, pay, submissions, submit, system, tasks, verify
 from conjectures_miner.context import AppContext
 from conjectures_miner.errors import CliError
 from conjectures_miner.output import Renderer
@@ -35,6 +35,7 @@ app.add_typer(pay.app, name="pay", invoke_without_command=True, callback=pay.pay
 app.command("build")(submit.build)
 app.command("check")(submit.check)
 app.command("submit")(submit.submit)
+app.command("verify")(verify.verify)
 app.command("status")(system.status)
 
 

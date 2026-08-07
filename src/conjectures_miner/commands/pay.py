@@ -33,11 +33,10 @@ from conjectures_miner import plan as plan_module
 from conjectures_miner.commands import context
 from conjectures_miner.context import AppContext
 from conjectures_miner.errors import CliError
-from conjectures_miner.plan import DEFAULT_PLAN_NAME
+from conjectures_miner.plan import DEFAULT_PLAN
 
 app = typer.Typer(no_args_is_help=True, help="Pay the submission price, and resolve a payment.")
 
-DEFAULT_PLAN = Path(DEFAULT_PLAN_NAME)
 RAO_PER_TAO = 1_000_000_000
 
 

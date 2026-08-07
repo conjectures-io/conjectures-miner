@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from conjectures_miner.errors import ApiError, CliError
@@ -46,17 +47,27 @@ class Renderer:
         """A warning or a progress line. Stderr even in JSON mode: `| jq` reads stdout only."""
         self._err.print(message)
 
+    def log(self, line: str) -> None:
+        """A line printed exactly as given: no markup, no highlighting.
+
+        For subprocess output, which is full of `[3/7922]` -- rich reads that as markup for a
+        style it does not have -- and for any line carrying a path, a ref or anything else this
+        tool did not choose the characters of.
+        """
+        self._err.print(line, markup=False, highlight=False)
+
     def failure(self, error: BaseException) -> None:
         if self._json:
             print(_dumps(_problem(error)), file=sys.stderr)
             return
-        self._err.print(f"[bold red]error[/] {error}")
+
+        self._err.print(f"[bold red]error[/] {escape(str(error))}", highlight=False)
         reason_code = getattr(error, "reason_code", None)
         if reason_code:
-            self._err.print(f"[dim]reason_code[/] {reason_code}")
+            self._err.print(f"[dim]reason_code[/] {escape(str(reason_code))}", highlight=False)
         hint = getattr(error, "hint", None)
         if hint:
-            self._err.print(f"[yellow]hint[/] {hint}")
+            self._err.print(f"[yellow]hint[/] {escape(str(hint))}", highlight=False)
 
     def confirm(self, question: str) -> bool:
         """Ask before something irreversible. Refuses rather than blocks when not a terminal."""

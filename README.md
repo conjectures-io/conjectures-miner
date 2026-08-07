@@ -1,7 +1,7 @@
 # conjectures-miner
 
 The miner CLI for the [conjectures.io](https://conjectures.io) Subnet 66 Lean-proof validator.
-Pick a task, build a submission bundle, check it for free, then sign and send it.
+Pick a task, build a submission bundle, verify and check it for free, then sign and send it.
 
 ## Install
 
@@ -70,14 +70,25 @@ manifest, and the payment slot `pay` fills.
 conjectures build --proof Main.lean --task erdos89
 ```
 
-**6. Check.** Free, unauthenticated, unlocks no key, and the last step before money moves. It
-exits non-zero on a refusal, so `conjectures check && conjectures pay` is safe to write.
+**6. Verify.** The proof itself, against the validator's own verifier on your machine. Needs
+[a verifier of your own](#a-verifier-of-your-own) built once. With no arguments it checks the
+`Main.lean` sealed into `submission.zip` -- what `submit` would actually send.
+
+```bash
+conjectures verify
+```
+
+**7. Check.** Free, unauthenticated, unlocks no key. It exits non-zero on a refusal, so
+`conjectures check && conjectures pay` is safe to write.
 
 ```bash
 conjectures check
 ```
 
-**7. Pay.** `pay` takes the treasury address and the exact price from the validator, asks the
+`check` is a question about the envelope and never reads the proof: it is the zip, the manifest and
+the static policy scan. Only `verify` answers whether the proof is correct.
+
+**8. Pay.** `pay` takes the treasury address and the exact price from the validator, asks the
 chain whether your coldkey owns the submitting hotkey -- the validator requires that, and it only
 checks *after* the money has moved -- sends the transfer, follows it to finality, and records the
 resolved reference on the plan. `--dry-run` runs every check and sends nothing.
@@ -99,14 +110,14 @@ your wallet or a block explorer shows:
 conjectures pay reference --extrinsic 4821993-2 --plan submission.plan.json
 ```
 
-**8. Submit.** No `--payment-ref`: the plan already cites the payment. Signs the request and
+**9. Submit.** No `--payment-ref`: the plan already cites the payment. Signs the request and
 spends it, after showing what is about to be spent (`--yes` skips the prompt).
 
 ```bash
 conjectures submit
 ```
 
-**9. Watch it.** Verification is asynchronous; the report is the verifier's immutable record and
+**10. Watch it.** Verification is asynchronous; the report is the verifier's immutable record and
 appears once it finishes.
 
 ```bash
@@ -114,10 +125,39 @@ conjectures submissions show <id> --watch
 conjectures submissions report <id>
 ```
 
+## A verifier of your own
+
+`check` asks the validator whether the envelope is acceptable. Whether the *proof* is correct is a
+different question, and the only thing that answers it is the verifier itself. `verify --setup`
+builds the validator's own, from source, on your machine.
+
+```bash
+conjectures verify --setup                          # first run: ~5 GB down, ~20 GB, 30-60 minutes
+conjectures verify                                  # the sealed submission.zip. up to an hour
+conjectures verify --proof Main.lean --task erdos89 # that proof instead, built or not
+conjectures verify --status                         # what it built, and whether it is still ready
+```
+
+A proof gets the same hour the validator allows it, and the run is quiet until Lean finishes.
+Re-running `--setup` on a host that already built once takes a couple of minutes: it moves the
+checkouts to the current revision and re-checks readiness rather than rebuilding.
+
+Linux only, x86_64 or aarch64; on Windows, run it inside WSL2. On a stock Debian or Ubuntu host:
+
+```bash
+sudo apt install -y git curl ca-certificates python3 python3-venv zstd
+```
+
+The checkouts land under your cache directory; `CONJECTURES_VERIFIER_ROOT` moves them and
+`CONJECTURES_VERIFIER_REF` chooses which validator revision to build. Local verification runs a
+development sandbox rather than the isolation a validator applies to a proof it did not write, so
+it answers whether the proof is correct -- not whether the submission will be accepted.
+
 ## What costs money, and what does not
 
-`tasks`, `status`, `build`, `check` and `pay reference` are free. `pay` moves TAO on chain and
-`submit` spends it; both show you what is about to happen first (`--yes` skips the prompt).
+`tasks`, `status`, `build`, `verify`, `check` and `pay reference` are free. `pay` moves TAO on
+chain and `submit` spends it; both show you what is about to happen first (`--yes` skips the
+prompt).
 
 They stay separate commands on purpose. A single command that paid *and* submitted would make
 every submission failure look like a lost transfer, and would invite a retry that pays twice. A
@@ -149,9 +189,12 @@ static-key authenticator expects instead of signing (`conjectures config set dev
 to keep it). That mode opens no private key at all -- the marker is a constant -- and a production
 validator refuses it, so the default is a real signature.
 
-`--output json` emits exactly one JSON document on stdout, so `conjectures tasks list --output
-json | jq` works. Exit codes: `1` refused, `2` bad configuration or input, `3` the validator said
-no, `4` the validator or the chain was unreachable.
+`--output json` emits exactly one JSON document on stdout. It is a global option, so it goes before
+the subcommand: `conjectures --output json tasks list | jq`. Exit codes: `1` refused, `2` bad
+configuration or input, `3` the validator said no, `4` the validator or the chain was unreachable,
+`5` the local verifier is missing or unfit. For `verify`, `0` is the verifier accepting the proof
+and `1` is it rejecting one; every other code means no verdict was reached, so
+`verify && check` never mistakes a broken host or a retired task for a wrong proof.
 
 ## Development
 
