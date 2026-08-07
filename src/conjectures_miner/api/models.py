@@ -39,20 +39,35 @@ class MachineContract(Model):
     target_theorem: str
 
 
-class Conjecture(Model):
-    """A task's public statement, and the Lean a proof is compiled against.
+class ConjectureTask(Model):
+    """One attack direction on a conjecture: what a bundle names, and the Lean it is checked by.
 
     `challenge_lean` is the exact `Challenge.lean` whose bytes are hashed into the published
     `task_bundle_sha256`, so it can be checked against the commitment rather than trusted.
     """
 
+    task_id: str
+    task_mode: str
+    task_bundle_sha256: str
+    challenge_lean: str
+    machine_contract: MachineContract
+
+
+class Conjecture(Model):
+    """A conjecture and every task issued against it, one per attack direction.
+
+    The statement belongs to the conjecture; the Lean belongs to a task. A caller that started
+    from a task id therefore has to pick its own back out of `tasks`.
+    """
+
     slug: str
     title: str
     statement: str
-    task_mode: str
-    challenge_lean: str
-    machine_contract: MachineContract
+    tasks: tuple[ConjectureTask, ...]
     repository_commit: str
+
+    def task(self, task_id: str) -> ConjectureTask | None:
+        return next((task for task in self.tasks if task.task_id == task_id), None)
 
 
 class QueueDepths(Model):

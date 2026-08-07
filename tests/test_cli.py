@@ -16,7 +16,9 @@ from conjectures_miner.cli import app
 from tests.conftest import (
     API,
     CHALLENGE,
+    COUNTEREXAMPLE_TASK_ID,
     HOTKEY,
+    NEGATED_CHALLENGE,
     PROOF,
     TASK_DIGEST,
     TASK_ID,
@@ -94,6 +96,43 @@ def test_the_challenge_is_saved_byte_for_byte_in_a_directory_of_its_own(
     # What you are proving, and which way round: `counterexample` wants the negation.
     assert saved["task_mode"] == "formalized"
     assert saved["target_theorem"] == "Bounty.target"
+
+
+def test_the_challenge_is_the_one_for_the_task_asked_for_not_the_conjectures_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock
+):
+    """The two directions share a slug, and the negation is a different thing to prove."""
+    httpx_mock.add_response(
+        url=f"{API}/v1/tasks", json=task_list_response(tasks=[TASK_ID, COUNTEREXAMPLE_TASK_ID])
+    )
+    httpx_mock.add_response(
+        url=f"{API}/v1/catalog/conjectures/{COUNTEREXAMPLE_TASK_ID}", json=conjecture_response()
+    )
+    succeed("tasks", "sync")
+    monkeypatch.chdir(tmp_path)
+
+    saved = succeed("tasks", "challenge", COUNTEREXAMPLE_TASK_ID)
+
+    assert saved["task_id"] == COUNTEREXAMPLE_TASK_ID
+    assert saved["task_mode"] == "counterexample"
+    assert (tmp_path / saved["challenge"]).read_bytes() == NEGATED_CHALLENGE.encode("utf-8")
+
+
+def test_a_task_id_the_catalog_no_longer_issues_is_refused_rather_than_guessed(
+    tmp_path: Path, httpx_mock: HTTPXMock
+):
+    retired = TASK_ID.replace("379fc029", "0ldp1n00")
+    httpx_mock.add_response(url=f"{API}/v1/tasks", json=task_list_response(tasks=[retired]))
+    httpx_mock.add_response(
+        url=f"{API}/v1/catalog/conjectures/{retired}", json=conjecture_response()
+    )
+    succeed("tasks", "sync")
+
+    error = refusal("tasks", "challenge", retired, "--dir", str(tmp_path / "elsewhere"))
+
+    assert retired in str(error)
+    assert "tasks sync" in (getattr(error, "hint", None) or "")
+    assert not (tmp_path / "elsewhere").exists()
 
 
 def test_the_challenge_says_when_the_catalog_and_the_cache_disagree(
