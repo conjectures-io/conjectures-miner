@@ -541,7 +541,10 @@ def rows(checks: Sequence[Check]) -> list[dict[str, Any]]:
 
 
 def _environment(where: Paths) -> dict[str, str]:
+    elan = where.validator / ".elan"
     return os.environ | {
+        "ELAN_HOME": str(elan),
+        "PATH": f"{elan / 'bin'}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
         # pin_dependencies.sh defaults to a sibling of the validator checkout, which is this
         # layout; naming it anyway means a layout change cannot silently repoint the audit patch.
         "CONJECTURES_TASKS_ROOT": str(where.tasks),

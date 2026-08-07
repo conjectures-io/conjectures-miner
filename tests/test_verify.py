@@ -69,6 +69,9 @@ for argument in "$@"; do
     exit "$code"
   fi
 done
+if [ -n "${STUB_DOCTOR_ENV:-}" ]; then
+  printf 'PATH=%s\\nELAN_HOME=%s\\n' "$PATH" "${ELAN_HOME:-}" > "$STUB_DOCTOR_ENV"
+fi
 cat "$root/doctor.json"
 STUB
 chmod +x .venv/bin/python
@@ -283,6 +286,27 @@ def test_verify_without_a_setup_says_what_to_run():
 
     assert getattr(error, "exit_code", None) == verifier.VerifierError.exit_code
     assert "verify --setup" in str(getattr(error, "hint", ""))
+
+
+@pytest.mark.usefixtures("upstream")
+def test_the_checkouts_own_toolchain_leads_the_path_the_verifier_is_run_with(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`doctor` resolves lean and lake off PATH, so a host with no global Elan reads as unready.
+
+    Found by the clean-host run: 54 minutes of build, every tool present, `ready: false`. Every
+    development host had a global Elan that hid it.
+    """
+    _succeed("verify", "--setup", "--offline")
+    recorded = isolated_home / "doctor-env.txt"
+    monkeypatch.setenv("STUB_DOCTOR_ENV", str(recorded))
+
+    _succeed("verify")
+
+    elan = isolated_home / "cache/verifier/conjectures-validator/.elan"
+    lines = dict(line.split("=", 1) for line in recorded.read_text().splitlines())
+    assert lines["PATH"].startswith(f"{elan / 'bin'}{os.pathsep}")
+    assert lines["ELAN_HOME"] == str(elan)
 
 
 @pytest.mark.usefixtures("upstream")
