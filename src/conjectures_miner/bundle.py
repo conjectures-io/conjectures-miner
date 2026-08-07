@@ -75,8 +75,7 @@ class Bundle:
 
     @property
     def proof(self) -> bytes:
-        """The proof as it will be sent, read back out of the archive rather than off disk.
-        """
+        """The proof as it will be sent, read back out of the archive rather than off disk."""
         with zipfile.ZipFile(BytesIO(self.raw)) as archive:
             return archive.read(PROOF_NAME)
 

@@ -27,14 +27,11 @@ from conjectures_miner.errors import ConfigError
 # $CONJECTURES_API.
 DEFAULT_API_BASE_URL = "https://conjectures.io"
 
-# The validator repository a local verifier is built from, and the ref to build.
-#
-# Temporarily a branch: `main` carries no `bootstrap.sh --miner`, so a setup against it fails with
-# `unknown argument: --miner` before it does anything. `pins.lock.json` is identical on both, so a
-# verifier built from here resolves exactly the dependencies production runs. Flip this to `main`
-# once the branch lands; `--ref` and CONJECTURES_VERIFIER_REF override it in the meantime.
+# The validator repository a local verifier is built from, and the ref to build. The ref decides
+# only which revision of the verifier source runs: `pins.lock.json` travels with it and is what
+# fixes every dependency. `--ref` and CONJECTURES_VERIFIER_REF override it.
 DEFAULT_VERIFIER_REPOSITORY = "https://github.com/conjectures-io/conjectures-validator.git"
-DEFAULT_VERIFIER_REF = "feat/miner-side-verification-utils"
+DEFAULT_VERIFIER_REF = "main"
 
 APP_NAME = "conjectures"
 ENV_PREFIX = "CONJECTURES_"
