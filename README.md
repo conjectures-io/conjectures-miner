@@ -124,7 +124,7 @@ different question, and the only thing that answers it is the verifier itself. `
 builds the validator's own, from source, on your machine.
 
 ```bash
-conjectures verify --setup                          # first run: ~5 GB down, ~20 GB, half an hour
+conjectures verify --setup                          # first run: ~5 GB down, ~20 GB, 30-60 minutes
 conjectures verify                                  # what it built, and whether it is still ready
 conjectures verify --proof Main.lean --task erdos89 # is this proof correct? up to an hour
 ```

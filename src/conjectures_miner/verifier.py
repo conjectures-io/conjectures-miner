@@ -357,7 +357,14 @@ def bootstrap(where: Paths, *, on_line: Callable[[str], None]) -> None:
     script = where.validator / "scripts" / "bootstrap.sh"
     if not script.is_file():
         raise VerifierError(f"{script} is missing from the validator checkout")
-    _stream([str(script), "--miner"], cwd=where.validator, env=_environment(where), on_line=on_line)
+    unbuffer = shutil.which("stdbuf")
+    prefix = [unbuffer, "-oL", "-eL"] if unbuffer else []
+    _stream(
+        [*prefix, str(script), "--miner"],
+        cwd=where.validator,
+        env=_environment(where),
+        on_line=on_line,
+    )
 
 
 def doctor(where: Paths) -> dict[str, Any]:
