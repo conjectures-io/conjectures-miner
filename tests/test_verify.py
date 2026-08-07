@@ -28,7 +28,7 @@ from typer.testing import CliRunner
 from conjectures_miner import verifier
 from conjectures_miner.cache import TaskCache, TaskCacheFile
 from conjectures_miner.cli import app
-from tests.conftest import API, TASK_DIGEST, TASK_ID, task_list_response
+from tests.conftest import API, PROOF, TASK_DIGEST, TASK_ID, task_list_response
 
 runner = CliRunner()
 GIT = shutil.which("git") or "git"
@@ -48,8 +48,9 @@ sys.exit(0 if ready else 1)
 """
 
 # The verifier the build installs, standing in for `python -m verifier`. It answers `doctor` and
-# `verify` differently, records the argv it was called with, and takes its exit code from the
-# environment -- the three things the CLI's behaviour turns on.
+# `verify` differently, records the argv and the submission it was handed, and takes its exit code
+# from the environment -- the things the CLI's behaviour turns on. The submission is copied out
+# because it is staged in a temporary directory the CLI deletes on the way back.
 BOOTSTRAP = """\
 #!/usr/bin/env bash
 set -euo pipefail
@@ -60,15 +61,24 @@ mkdir -p .venv/bin
 cat > .venv/bin/python <<'STUB'
 #!/usr/bin/env bash
 root="$(cd "$(dirname "$0")/../.." && pwd)"
+mode=doctor
+submission=""
+previous=""
 for argument in "$@"; do
-  if [ "$argument" = "verify" ]; then
-    if [ -n "${STUB_VERIFY_ARGV:-}" ]; then printf '%s\\n' "$*" > "$STUB_VERIFY_ARGV"; fi
-    code="${STUB_VERIFY_EXIT:-0}"
-    if [ "$code" = "0" ]; then verdict=accepted; else verdict=rejected; fi
-    cat "$root/verify-$verdict.json"
-    exit "$code"
-  fi
+  if [ "$argument" = "verify" ]; then mode=verify; fi
+  if [ "$previous" = "--submission" ]; then submission="$argument"; fi
+  previous="$argument"
 done
+if [ "$mode" = "verify" ]; then
+  if [ -n "${STUB_VERIFY_ARGV:-}" ]; then
+    printf '%s\\n' "$*" > "$STUB_VERIFY_ARGV"
+    cp "$submission" "$STUB_VERIFY_ARGV.submission"
+  fi
+  code="${STUB_VERIFY_EXIT:-0}"
+  if [ "$code" = "0" ]; then verdict=accepted; else verdict=rejected; fi
+  cat "$root/verify-$verdict.json"
+  exit "$code"
+fi
 if [ -n "${STUB_DOCTOR_ENV:-}" ]; then
   printf 'PATH=%s\\nELAN_HOME=%s\\n' "$PATH" "${ELAN_HOME:-}" > "$STUB_DOCTOR_ENV"
 fi
@@ -301,7 +311,7 @@ def test_the_checkouts_own_toolchain_leads_the_path_the_verifier_is_run_with(
     recorded = isolated_home / "doctor-env.txt"
     monkeypatch.setenv("STUB_DOCTOR_ENV", str(recorded))
 
-    _succeed("verify")
+    _succeed("verify", "--status")
 
     elan = isolated_home / "cache/verifier/conjectures-validator/.elan"
     lines = dict(line.split("=", 1) for line in recorded.read_text().splitlines())
@@ -315,7 +325,7 @@ def test_a_verifier_that_reports_unready_exits_non_zero(isolated_home: Path):
     checkout = isolated_home / "cache" / "verifier" / "conjectures-validator"
     (checkout / "doctor.json").write_text(json.dumps(DOCTOR | {"ready": False}))
 
-    result = _invoke("verify")
+    result = _invoke("verify", "--status")
 
     assert result.exit_code == 1
     assert json.loads(result.stdout)["ready"] is False
@@ -477,6 +487,51 @@ def test_a_digest_the_pinned_pool_disagrees_with_is_refused_as_pin_drift(
     assert getattr(error, "exit_code", None) == verifier.VerifierError.exit_code
     assert "the pinned pool has" in str(error)
     assert not ready.exists()
+
+
+# --- the sealed bundle as the default ------------------------------------------------------------
+
+
+def test_with_no_arguments_it_is_the_sealed_bundle_that_is_verified(
+    ready: Path, built: tuple[Path, Path], isolated_home: Path
+):
+    """`build` then `verify`, with nothing to retype, and no cache: the manifest names the task.
+
+    The bytes checked come out of the archive rather than off disk, so this is a statement about
+    the submission -- a proof edited since `build` is not what `submit` would send.
+    """
+    _, plan_path = built
+
+    verdict = _succeed("verify", "--plan", str(plan_path))
+
+    assert verdict["accepted"] is True
+    called = ready.read_text(encoding="utf-8")
+    pool = isolated_home / "cache/verifier/conjectures-tasks/pool/tier-1" / TASK_SLUG
+    assert f"--task {pool} " in called
+    assert f"--expected-task-sha256 {TASK_DIGEST}" in called
+    assert Path(f"{ready}.submission").read_bytes() == PROOF
+
+
+def test_an_explicit_proof_replaces_the_sealed_one_and_leaves_the_task_to_the_plan(
+    ready: Path, built: tuple[Path, Path], isolated_home: Path
+):
+    _, plan_path = built
+    candidate = isolated_home / "Candidate.lean"
+    candidate.write_bytes(b"theorem target : True := by\n  trivial\n")
+
+    _succeed("verify", "--plan", str(plan_path), "--proof", str(candidate))
+
+    assert Path(f"{ready}.submission").read_bytes() == candidate.read_bytes()
+    assert f"--expected-task-sha256 {TASK_DIGEST}" in ready.read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("ready")
+def test_nothing_built_and_nothing_named_is_refused_with_both_ways_out(isolated_home: Path):
+    error = _refusal("verify", "--plan", str(isolated_home / "absent.plan.json"))
+
+    assert getattr(error, "exit_code", None) == verifier.TaskNotVerifiableError.exit_code
+    assert "--proof and --task" in str(error)
+    assert "conjectures build" in str(getattr(error, "hint", ""))
 
 
 # --- the stub upstreams ------------------------------------------------------------------------

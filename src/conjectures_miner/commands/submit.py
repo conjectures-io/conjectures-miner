@@ -31,11 +31,10 @@ from conjectures_miner.cache import complete_task_id
 from conjectures_miner.commands import context
 from conjectures_miner.commands.tasks import refresh_cache
 from conjectures_miner.errors import CliError
-from conjectures_miner.plan import DEFAULT_PLAN_NAME
+from conjectures_miner.plan import DEFAULT_PLAN
 from conjectures_miner.signing import submit_headers
 
 DEFAULT_BUNDLE = Path("submission.zip")
-DEFAULT_PLAN = Path(DEFAULT_PLAN_NAME)
 
 
 def build(
@@ -126,7 +125,8 @@ def build(
         title="built",
     )
     app_ctx.render.note(
-        "Next: `conjectures check` -- it is free and it is the last step before money moves."
+        "Next: `conjectures verify` -- the real verifier over this bundle, locally and for free. "
+        "Then `conjectures check`, which is about the envelope and never reads the proof."
     )
 
 
@@ -164,7 +164,8 @@ def check(
         # A refusal is a successful call, but the exit code has to gate `check && submit`.
         raise typer.Exit(1)
     app_ctx.render.note(
-        "Preflight passed. It is not a guarantee, but everything static has been checked."
+        "Preflight passed: the envelope is acceptable. Nothing here read the proof -- "
+        "`conjectures verify` is the one that does."
     )
 
 

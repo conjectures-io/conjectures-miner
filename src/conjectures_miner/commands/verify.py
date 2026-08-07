@@ -1,11 +1,13 @@
 """`conjectures verify` -- the validator's own verifier, running on the miner's host.
 
     verify --setup                        clone the validator and the tasks repo, build, say ready
-    verify                                report what the last setup left behind
-    verify --proof Main.lean --task <id>  is this proof correct?
+    verify                                is the proof `build` sealed correct?
+    verify --proof Main.lean --task <id>  that proof instead, sealed or not
+    verify --status                       report what the last setup left behind
 
-The third line is the one nothing else answers. `check` asks the validator whether the envelope is
-acceptable; only the verifier can say whether the proof proves the stated theorem.
+The second and third lines are what nothing else answers. `check` asks the validator whether the
+envelope is acceptable and never reads the proof; only the verifier can say whether the proof
+proves the stated theorem.
 
 An answer from here is about the proof and not about the submission: the local build runs the
 development sandbox, not the isolation a validator applies to a proof it did not write. Every
@@ -14,20 +16,24 @@ report says so rather than leaving it to be inferred.
 
 from __future__ import annotations
 
+import tempfile
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 
 from conjectures_miner import bundle as bundle_module
+from conjectures_miner import plan as plan_module
 from conjectures_miner import verifier as verifier_module
 from conjectures_miner.cache import complete_task_id
 from conjectures_miner.commands import context
 from conjectures_miner.commands.tasks import refresh_cache
 from conjectures_miner.context import AppContext
 from conjectures_miner.errors import CliError
+from conjectures_miner.plan import DEFAULT_PLAN
 from conjectures_miner.verifier import (
     Check,
     Paths,
@@ -54,8 +60,15 @@ def verify(
         str | None,
         typer.Option(help="Task id, or a unique prefix of one.", autocompletion=complete_task_id),
     ] = None,
+    plan: Annotated[
+        Path, typer.Option(help="The submission plan to take the proof and task from.")
+    ] = DEFAULT_PLAN,
     setup: Annotated[
         bool, typer.Option("--setup", help="Build or refresh the local verifier.")
+    ] = False,
+    status: Annotated[
+        bool,
+        typer.Option("--status", help="Report the local verifier instead of checking a proof."),
     ] = False,
     ref: Annotated[
         str | None, typer.Option(help="Validator ref to build from. Overrides the configured one.")
@@ -68,19 +81,23 @@ def verify(
         str | None, typer.Option(help="Use this digest, and take --task as a literal task id.")
     ] = None,
 ) -> None:
-    """Check a proof locally; with --setup, build the verifier that checks it."""
+    """Check a proof locally. With no arguments, the one `build` sealed into the bundle."""
     app_ctx = context(ctx)
     where = verifier_module.paths(app_ctx.settings)
     if setup:
         _setup(app_ctx, where, ref=ref, offline=offline)
-    elif proof is not None or task is not None:
-        if proof is None or task is None:
-            raise TaskNotVerifiableError("--proof and --task go together; pass both or neither")
-        _verify_proof(
-            app_ctx, where, proof=proof, task=task, refresh=refresh, task_sha256=task_sha256
-        )
-    else:
+    elif status:
         _report(app_ctx, where)
+    else:
+        _verify_proof(
+            app_ctx,
+            where,
+            proof=proof,
+            task=task,
+            plan=plan,
+            refresh=refresh,
+            task_sha256=task_sha256,
+        )
 
 
 def _setup(app_ctx: AppContext, where: Paths, *, ref: str | None, offline: bool) -> None:
@@ -127,12 +144,23 @@ def _setup(app_ctx: AppContext, where: Paths, *, ref: str | None, offline: bool)
     app_ctx.render.note(NOT_AN_ATTESTATION)
 
 
+@dataclass(frozen=True, slots=True)
+class Subject:
+    """What is about to be verified, and a phrase naming where it came from."""
+
+    proof: bytes
+    task_id: str
+    digest: str
+    origin: str
+
+
 def _verify_proof(
     app_ctx: AppContext,
     where: Paths,
     *,
-    proof: Path,
-    task: str,
+    proof: Path | None,
+    task: str | None,
+    plan: Path,
     refresh: bool,
     task_sha256: str | None,
 ) -> None:
@@ -141,34 +169,29 @@ def _verify_proof(
             f"no local verifier at {where.home}",
             hint=f"Run `conjectures verify --setup`. {FIRST_RUN}",
         )
-    try:
-        proof_bytes = proof.read_bytes()
-    except OSError as exc:
-        raise CliError(f"could not read {proof}: {exc}") from exc
+    subject = _subject(
+        app_ctx, proof=proof, task=task, plan=plan, refresh=refresh, task_sha256=task_sha256
+    )
     # The same byte policy `build` applies, so an oversized or non-UTF-8 proof is refused for the
     # same reason it would be at submission, in no time rather than after a Lean build.
-    bundle_module.check_proof(proof_bytes)
+    bundle_module.check_proof(subject.proof)
 
-    if task_sha256 is not None:
-        task_id, digest = task, task_sha256
-    else:
-        if refresh:
-            refresh_cache(app_ctx)
-        resolved = app_ctx.cache.resolve(task)
-        task_id, digest = resolved.task_id, resolved.task_bundle_sha256
-
-    found = _locate(app_ctx, where, task_id=task_id, digest=digest)
+    found = _locate(app_ctx, where, task_id=subject.task_id, digest=subject.digest)
     app_ctx.render.note(
-        f"[bold]verifying[/] a {found.task_mode} target -- up to "
+        f"[bold]verifying[/] {subject.origin}\n"
+        f"a {found.task_mode} target -- up to "
         f"{found.timeout_seconds // 60} minutes, and quiet until it finishes"
     )
-    code, report = verifier_module.run_verification(
-        where,
-        task=found.path,
-        submission=proof,
-        expected_task_sha256=digest,
-        on_line=app_ctx.render.log,
-    )
+    with tempfile.TemporaryDirectory() as scratch:
+        staged = Path(scratch) / bundle_module.PROOF_NAME
+        staged.write_bytes(subject.proof)
+        code, report = verifier_module.run_verification(
+            where,
+            task=found.path,
+            submission=staged,
+            expected_task_sha256=subject.digest,
+            on_line=app_ctx.render.log,
+        )
 
     app_ctx.render.data(verifier_module.summarise_verdict(report), title="verification")
     if report.get("accepted"):
@@ -187,6 +210,66 @@ def _verify_proof(
             hint="Nothing here is about the proof. `conjectures verify` reports the host.",
         )
     raise typer.Exit(1)
+
+
+def _subject(
+    app_ctx: AppContext,
+    *,
+    proof: Path | None,
+    task: str | None,
+    plan: Path,
+    refresh: bool,
+    task_sha256: str | None,
+) -> Subject:
+    """The sealed bundle is the default, and --proof and --task each replace their own half."""
+    if proof is not None and task is not None:
+        named = _named_task(app_ctx, task, refresh=refresh, task_sha256=task_sha256)
+        return Subject(_read_proof(proof), *named, origin=str(proof))
+
+    missing = [name for name, given in (("--proof", proof), ("--task", task)) if given is None]
+    sealed = _sealed(plan, missing)
+    task_id, digest = (
+        _named_task(app_ctx, task, refresh=refresh, task_sha256=task_sha256)
+        if task is not None
+        else (sealed.archive.task_id, sealed.archive.task_bundle_sha256)
+    )
+    if proof is not None:
+        return Subject(_read_proof(proof), task_id, digest, origin=str(proof))
+    return Subject(
+        sealed.archive.proof,
+        task_id,
+        digest,
+        origin=f"the {bundle_module.PROOF_NAME} sealed into {sealed.archive_path}",
+    )
+
+
+def _sealed(plan: Path, needed: Sequence[str]) -> plan_module.Loaded:
+    """The archive the plan vouches for, or an explanation of the three ways to name one."""
+    if not plan.is_file():
+        raise TaskNotVerifiableError(
+            f"nothing to verify: there is no {plan} to take {' and '.join(needed)} from",
+            hint="Run `conjectures build` first, or name the proof and the task with --proof and "
+            "--task. `conjectures verify --status` reports the local verifier instead.",
+        )
+    return plan_module.load(plan, None)
+
+
+def _named_task(
+    app_ctx: AppContext, task: str, *, refresh: bool, task_sha256: str | None
+) -> tuple[str, str]:
+    if task_sha256 is not None:
+        return task, task_sha256
+    if refresh:
+        refresh_cache(app_ctx)
+    resolved = app_ctx.cache.resolve(task)
+    return resolved.task_id, resolved.task_bundle_sha256
+
+
+def _read_proof(proof: Path) -> bytes:
+    try:
+        return proof.read_bytes()
+    except OSError as exc:
+        raise CliError(f"could not read {proof}: {exc}") from exc
 
 
 def _resource_limit_explanation() -> str:

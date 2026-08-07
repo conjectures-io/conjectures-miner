@@ -73,6 +73,13 @@ class Bundle:
     def miner_hotkey(self) -> str:
         return str(self.manifest["miner_hotkey"])
 
+    @property
+    def proof(self) -> bytes:
+        """The proof as it will be sent, read back out of the archive rather than off disk.
+        """
+        with zipfile.ZipFile(BytesIO(self.raw)) as archive:
+            return archive.read(PROOF_NAME)
+
 
 def check_proof(proof: bytes) -> None:
     """Apply the validator's byte-level proof policy before anything is written."""

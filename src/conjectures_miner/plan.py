@@ -29,6 +29,7 @@ PLAN_SCHEMA_VERSION: PlanSchemaVersion = get_args(PlanSchemaVersion)[0]
 # Not `submission.json`: that name is already taken by the manifest *inside* the archive, and
 # unzipping beside the plan would overwrite it.
 DEFAULT_PLAN_NAME = "submission.plan.json"
+DEFAULT_PLAN = Path(DEFAULT_PLAN_NAME)
 
 
 class PlanError(CliError):
@@ -90,6 +91,7 @@ class Loaded:
     archive: bundle_module.Bundle
     plan: SubmissionPlan | None
     source: Path
+    archive_path: Path
 
     @property
     def payment_reference(self) -> str | None:
@@ -132,7 +134,10 @@ def load(plan_path: Path | None, bundle_override: Path | None) -> Loaded:
     """
     if bundle_override is not None:
         return Loaded(
-            archive=bundle_module.read(bundle_override), plan=None, source=bundle_override
+            archive=bundle_module.read(bundle_override),
+            plan=None,
+            source=bundle_override,
+            archive_path=bundle_override,
         )
     if plan_path is None:
         raise PlanError("nothing to submit: pass --plan or --bundle")
@@ -165,7 +170,7 @@ def load(plan_path: Path | None, bundle_override: Path | None) -> Loaded:
             f"{plan_path} and the archive's manifest disagree on {', '.join(differing)}",
             hint="Rebuild the pair with `conjectures build`.",
         )
-    return Loaded(archive=archive, plan=plan, source=plan_path)
+    return Loaded(archive=archive, plan=plan, source=plan_path, archive_path=archive_path)
 
 
 def record_payment(
