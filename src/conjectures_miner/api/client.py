@@ -139,8 +139,19 @@ class ApiClient:
         except ValidationError as exc:
             raise CliError(
                 f"the validator answered {path} in a shape this CLI does not understand",
-                hint=f"Upgrade conjectures-miner. ({exc.error_count()} unexpected fields)",
+                hint=f"Upgrade conjectures-miner. It could not read {_unreadable(exc)}.",
             ) from exc
+
+
+def _unreadable(exc: ValidationError) -> str:
+    """Which fields, not how many.
+
+    `extra="ignore"` means no error here is a field the CLI did not expect: every one is a field
+    it needed and the answer did not have, or had in another shape.
+    """
+    named = [".".join(str(part) for part in error["loc"]) or "the body" for error in exc.errors()]
+    shown = ", ".join(named[:4])
+    return shown if len(named) <= 4 else f"{shown} and {len(named) - 4} more"
 
 
 def _body(response: httpx.Response) -> Any:

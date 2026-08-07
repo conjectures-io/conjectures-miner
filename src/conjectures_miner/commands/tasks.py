@@ -122,28 +122,34 @@ def challenge(
     app_ctx = context(ctx)
     resolved = app_ctx.cache.resolve(task)
     conjecture = app_ctx.client.read_conjecture(resolved.task_id)
+    issued = conjecture.task(resolved.task_id)
+    if issued is None:
+        raise CliError(
+            f"the catalog no longer issues {resolved.task_id}",
+            hint="Every task id changes on a pin rotation. Run `conjectures tasks sync`; this "
+            f"conjecture is now issued as {', '.join(task.task_id for task in conjecture.tasks)}.",
+        )
 
     destination = directory / resolved.task_id / CHALLENGE_NAME
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Bytes, not text: these are the bytes hashed into the published commitment, and text
-        # mode would rewrite the line endings of some of them.
-        destination.write_bytes(conjecture.challenge_lean.encode("utf-8"))
+        destination.write_bytes(issued.challenge_lean.encode("utf-8"))
     except OSError as exc:
         raise CliError(f"could not write {destination}: {exc}") from exc
 
     app_ctx.render.data(
         {
-            "task_id": conjecture.slug,
+            "task_id": issued.task_id,
+            "conjecture": conjecture.slug,
             # `counterexample` means the target is the negation of the statement below.
-            "task_mode": conjecture.task_mode,
-            "target_theorem": conjecture.machine_contract.target_theorem,
+            "task_mode": issued.task_mode,
+            "target_theorem": issued.machine_contract.target_theorem,
             "statement": conjecture.statement,
             "challenge": str(destination),
         },
         title=conjecture.title,
     )
-    if conjecture.machine_contract.task_bundle_sha256 != resolved.task_bundle_sha256:
+    if issued.machine_contract.task_bundle_sha256 != resolved.task_bundle_sha256:
         app_ctx.render.note(
             "[yellow]The catalog and the cache disagree on this task's digest. "
             "Run `conjectures tasks sync` before building.[/]"
