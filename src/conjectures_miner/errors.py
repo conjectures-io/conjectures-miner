@@ -25,8 +25,36 @@ ADVICE: Mapping[str, str] = {
         "Spend the credit instead."
     ),
     "SIGNATURE_INVALID": (
-        "Check that the signing hotkey is the one in the bundle manifest. If this validator runs "
-        "outside PROD it may want the static marker instead: pass --dev-signature."
+        "Check that the signing hotkey is the one in the bundle manifest. When submitting to a "
+        "validator outside PROD, it may want the static marker instead: pass --dev-signature. "
+        "That flag cannot sign you in, though -- `auth login` needs a real signature."
+    ),
+    "HOTKEY_NOT_LINKED": (
+        "This hotkey is not attached to a conjectures.io account. Run `conjectures auth register` "
+        "on the machine that holds your coldkey, then `conjectures auth login` again. Linking is "
+        "a coldkey action: a hotkey cannot attach itself to an account."
+    ),
+    "HOTKEY_ALREADY_LINKED": (
+        "Another account already holds this hotkey, and it is not re-parented silently -- a "
+        "submission has one owner and a reward one destination. Register the hotkey you meant "
+        "with --hotkey, or detach it from the other account first."
+    ),
+    "BROWSER_SESSION_REQUIRED": (
+        "That change is refused to a CLI token and accepted only from a browser session, because "
+        "it decides who the account is or where its money goes. `conjectures auth register` opens "
+        "one with your coldkey for the length of the command."
+    ),
+    "CHALLENGE_INVALID": (
+        "The challenge expired or was already used. Run the command again; each one is "
+        "single-use and short-lived."
+    ),
+    "NOT_AUTHENTICATED": (
+        "The session expired or was revoked. Run `conjectures auth login`. Nothing else is "
+        "affected: `submit` and `submissions show` sign each request and need no session."
+    ),
+    "TOO_MANY_CHALLENGES": (
+        "Too many sign-in attempts for that hotkey. Wait out `Retry-After`, then try again. No "
+        "key was unlocked and nothing was signed."
     ),
     "TASK_NOT_ALLOWED": (
         "The task pool moved. Run `conjectures tasks sync`, rebuild, and submit again with the "

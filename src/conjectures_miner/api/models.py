@@ -159,3 +159,108 @@ class Report(Model):
     submission_id: uuid.UUID
     report_sha256: str
     report: dict[str, Any]
+
+
+# --- The website account, reached with a session token rather than a per-request signature -------
+
+
+class CliChallenge(Model):
+    """A nonce and the exact message to sign.
+
+    `message` is what gets signed, verbatim. `nonce` is carried for display and diagnosis only --
+    rebuilding the message from it is precisely the mistake that makes a signature meaningless.
+    """
+
+    nonce: str
+    message: str
+    expires_at: datetime
+
+
+class LinkedHotkey(Model):
+    hotkey: str
+    linked_at: datetime
+
+
+class LinkedWallet(Model):
+    coldkey: str
+    linked_at: datetime
+
+
+class PayoutDestination(Model):
+    coldkey: str | None = None
+    hotkey: str | None = None
+
+
+class Account(Model):
+    """Who the session belongs to. An account may hold several hotkeys and several coldkeys."""
+
+    id: uuid.UUID
+    email: str | None = None
+    email_verified: bool = False
+    display_name: str | None = None
+    roles: tuple[str, ...] = ()
+    # Null until set on the website. A reward cannot be paid without it.
+    payout: PayoutDestination | None = None
+    hotkeys: tuple[LinkedHotkey, ...] = ()
+    wallets: tuple[LinkedWallet, ...] = ()
+    created_at: datetime
+
+
+class SessionEnvelope(Model):
+    """What a *browser* sign-in returns: the account, and nothing else.
+
+    The credential is not in the body -- it arrives as two `Set-Cookie` headers, one of them
+    HttpOnly. That asymmetry with `CliSession` is the point of the two session kinds, and it is
+    why `auth register` keeps its cookie in memory and revokes it on the way out.
+    """
+
+    account: Account
+
+
+class CliSession(Model):
+    """What a successful sign-in returns.
+
+    Holds the token, so it is never handed to the renderer whole: `auth login` builds its own dict
+    of the fields that are safe to show, and adds the token to it only under `--show-token`.
+    Dumping the model would print the account's email and payout keys alongside the credential,
+    which is three disclosures for the price of one. See `session.py` for where the token goes.
+    """
+
+    access_token: str
+    token_type: str
+    expires_at: datetime
+    # The one hotkey this token may act as. An account may own several; a token speaks for the key
+    # that minted it, and the validator refuses it for any of the others.
+    hotkey_scope: str
+    account: Account
+
+
+class SubmissionSummary(Model):
+    """One of the account's own submissions, as it appears in a list.
+
+    Flatter than `SubmissionStatus` and keyed `id` rather than `submission_id`: a different endpoint
+    with a different shape, not the same object abbreviated.
+    """
+
+    id: uuid.UUID
+    hotkey: str
+    task_id: str
+    proof_sha256: str
+    verification_status: str
+    manual_review_status: str
+    reward_status: str
+    failure_reason: str | None = None
+    # Nullable for the same reason the nested quote is: another proof may already have solved the
+    # target, which leaves the estimate undefined rather than zero.
+    bounty_amount_rao: int | None = None
+    bounty_policy_version: str | None = None
+    bounty_locked: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class SubmissionPage(Model):
+    """One page of a keyset-paginated feed. `next_cursor` is null at the end."""
+
+    items: tuple[SubmissionSummary, ...] = ()
+    next_cursor: str | None = None

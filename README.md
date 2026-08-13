@@ -155,7 +155,7 @@ it answers whether the proof is correct -- not whether the submission will be ac
 
 ## What costs money, and what does not
 
-`tasks`, `status`, `build`, `verify`, `check` and `pay reference` are free. `pay` moves TAO on
+`tasks`, `status`, `build`, `verify`, `check`, `auth` and `pay reference` are free. `pay` moves TAO on
 chain and `submit` spends it; both show you what is about to happen first (`--yes` skips the
 prompt).
 
@@ -169,6 +169,104 @@ written, so the same reference still works. The idempotency key is written to di
 request goes out, which is what makes a retry safe: reuse it and you get the original outcome
 rather than a second charge. Every refusal prints whether the payment survived it.
 
+## Your account on the website
+
+`submissions show` proves control of a hotkey and reads what that hotkey submitted. An **account** is
+a different thing: it can hold several hotkeys and several coldkeys, and it is what the website shows
+you. No per-request signature can ask "everything on my account", because a signature names a key and
+that answer is keyed by account. `conjectures auth` bridges the two.
+
+```bash
+conjectures auth register    # claim the account with your coldkey, attach this hotkey. Once.
+conjectures auth login       # sign a challenge, store the session token it earns
+conjectures auth status      # is there a live session, and what for? non-zero when not
+conjectures auth token       # print the stored token, for a script or the clipboard
+conjectures auth logout      # revoke it server-side, then forget it locally
+conjectures submissions mine # every submission on the account, across every linked hotkey
+```
+
+### Two commands, because two keys
+
+`register` needs your **coldkey**; `login` needs only your **hotkey**. That split is the security
+property, not an inconvenience to work around.
+
+A hotkey can never create an account or attach itself to one. Bittensor stores hotkeys unencrypted
+by design, so a hotkey that leaks is a way to *work* -- submit, read status -- and never a way *in*.
+The validator holds the same line from its side: linking a hotkey, repointing your payout and
+editing your profile are refused to a CLI token and accepted only from a browser session, because
+left open to a token they compose into account takeover from one stolen file.
+
+So `register` opens a browser session with your coldkey, uses it for the one write it came to make,
+and **revokes it before returning** -- on the failure path too. The cookie is never written to disk,
+and by the time the command exits the credential that could repoint your payout no longer exists.
+What survives is the link, which is a fact in the validator's database rather than a credential.
+
+Run it once, wherever your coldkey lives. Then run `login` on each rig, where only the hotkey needs
+to be. Re-running `register` is a no-op, so it is safe to leave in a setup script.
+
+```bash
+conjectures auth register --wallet default --hotkey rig-1
+```
+
+`login` on a hotkey that was never registered refuses with `HOTKEY_NOT_LINKED` and tells you this.
+
+### What gets signed, and what gets stored
+
+Both commands ask the validator for a challenge, show you the exact message, and sign it only after
+you confirm (`--yes` skips the prompt). Both read the key's *public* address to ask for the
+challenge, so a refusal -- rate limit, unregistered hotkey -- costs you no passphrase prompt. What
+gets signed is the validator's message byte for byte; nothing is rebuilt locally.
+
+**And nothing is signed before it is read.** Each of the three messages is checked first -- the
+right prefix on its own first line, your address, your validator's domain -- because a tool that
+signs whatever a server sends is a signing oracle for every other message it is ever asked for. A
+mistyped `--api` would otherwise be enough to collect a `conjectures-hotkey-link-v1` signature that
+attaches your hotkey to someone else's account, or a `conjectures-deposit-claim-v1` signature from
+your coldkey that claims a transfer. The check runs before the key is unlocked, so a refused message
+produces no signature at all.
+
+The session token lives in `session.json` beside your config file
+(`~/.config/conjectures/session.json` on Linux), mode `0600`. It never goes in `config.toml` and
+never comes from an environment variable. It is bound to the validator that minted it: point
+`--api` somewhere else and the CLI refuses to send it rather than leak a credential to the wrong
+host.
+
+### Getting the token out
+
+Nothing prints it unless you ask. When you need it -- a `curl` against `/v1/me`, a copy to another
+tool -- `auth token` writes it to stdout and nothing else, so it pipes:
+
+```bash
+conjectures auth token | xclip -selection clipboard
+TOKEN=$(conjectures auth token)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/v1/me
+```
+
+The caveats go to stderr, so they stay out of the pipe. An expired token, or one minted for a
+different validator, is refused rather than printed -- handing you a credential that will bounce
+is not a convenience, and one belonging to another deployment is a thing you might paste into a
+request to this one.
+
+`auth login --show-token` puts the token in the sign-in output instead, if you want it at the
+moment it is minted. It joins the one result document rather than following it, so
+`--output json | jq` keeps working; and it adds the token *only*, never the account's email
+address or payout keys.
+
+Both of these put a live credential on your terminal, which means scrollback, shell history, and
+any recording of the session. `auth logout` revokes it if it goes somewhere it should not, and
+`/v1/me/sessions` on the website lists every live session so you can revoke one you no longer
+recognise.
+
+`--dev-signature` cannot register or sign in: that mode sends a fixed marker rather than a
+signature, and a constant can never verify against a freshly minted challenge. `--uri //Alice` and
+`--coldkey-uri //Bob` against a local validator do work, because those are real keypairs.
+
+Nothing else needs a session. `tasks`, `status`, `build`, `check`, `verify`, `pay`, `submit` and
+`submissions show`/`report` all work with no account at all.
+
+`register` and `pay` are the only two commands that open your coldkey -- one claims the account, the
+other moves money. Everything else runs on the hotkey.
+
 ## Configuration
 
 Precedence, highest first: **CLI flag -> environment (`CONJECTURES_*`) -> user config file ->
@@ -179,10 +277,11 @@ conjectures config path
 conjectures config show --resolved     # every value, and which layer it came from
 ```
 
-Wallet *names* live in the config; key material never does. The hotkey signs every authenticated
-request. **`pay` is the one command that opens your coldkey**, because a transfer has to be signed
-by the account holding the funds -- it never leaves the process, and what goes on chain is a signed
-extrinsic. Every other command runs without it.
+Wallet *names* live in the config; key material never does, and neither does the session token --
+[that has its own file](#your-account-on-the-website). The hotkey signs every authenticated request,
+either per-request or once to mint a session. **`pay` is the one command that opens your coldkey**,
+because a transfer has to be signed by the account holding the funds -- it never leaves the process,
+and what goes on chain is a signed extrinsic. Every other command runs without it.
 
 Against a validator running outside `APP_MODE=PROD`, `--dev-signature` sends the fixed marker its
 static-key authenticator expects instead of signing (`conjectures config set dev_signature true`
