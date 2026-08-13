@@ -13,7 +13,16 @@ import typer
 
 from conjectures_miner import __version__
 from conjectures_miner import settings as settings_module
-from conjectures_miner.commands import config, pay, submissions, submit, system, tasks, verify
+from conjectures_miner.commands import (
+    auth,
+    config,
+    pay,
+    submissions,
+    submit,
+    system,
+    tasks,
+    verify,
+)
 from conjectures_miner.context import AppContext
 from conjectures_miner.errors import CliError
 from conjectures_miner.output import Renderer
@@ -28,6 +37,7 @@ app = typer.Typer(
 app.add_typer(tasks.app, name="tasks")
 app.add_typer(submissions.app, name="submissions")
 app.add_typer(config.app, name="config")
+app.add_typer(auth.app, name="auth")
 # `pay` is both a command and a group: paying is the common case, and `pay reference` recovers a
 # transfer that was made but whose reference was lost. `invoke_without_command` is what lets one
 # name be both.

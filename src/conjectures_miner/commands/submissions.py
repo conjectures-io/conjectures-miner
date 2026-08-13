@@ -1,6 +1,10 @@
 """`conjectures submissions` -- what happened to a submission.
 
-Both reads use the read signature scheme, not the submit one: a hotkey may read only its own.
+`show` and `report` use the read signature scheme, not the submit one: a hotkey may read only its
+own. `mine` is scoped differently and deliberately -- it authenticates as the *account*, with the
+session token `conjectures auth login` stores, which is why it can list submissions made by hotkeys
+this CLI is not currently pointed at. No per-request signature can ask that question, because a
+signature names a key and the answer is keyed by account.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from typing import Annotated
 import typer
 
 from conjectures_miner.api import models
-from conjectures_miner.commands import context
+from conjectures_miner.commands import auth, context
 from conjectures_miner.context import AppContext
 from conjectures_miner.errors import ApiError
 from conjectures_miner.signing import read_headers
@@ -21,6 +25,11 @@ app = typer.Typer(help="Track submitted proofs.", no_args_is_help=True)
 POLL_FIRST_SECONDS = 5.0
 POLL_MAX_SECONDS = 60.0
 POLL_BACKOFF = 1.5
+
+# The validator's own ceiling. Bounded here so an over-large page is a usage error the shell
+# reports, rather than a round trip that comes back 422.
+MAX_PAGE_SIZE = 100
+DEFAULT_PAGE_SIZE = 25
 
 
 @app.command("show")
@@ -57,6 +66,39 @@ def report(ctx: typer.Context, submission_id: Annotated[str, typer.Argument()]) 
     app_ctx.render.data(
         {"report_sha256": answer.report_sha256, **answer.report}, title="verifier report"
     )
+
+
+@app.command("mine")
+def mine(
+    ctx: typer.Context,
+    limit: Annotated[
+        int, typer.Option(min=1, max=MAX_PAGE_SIZE, help="How many to fetch.")
+    ] = DEFAULT_PAGE_SIZE,
+    cursor: Annotated[
+        str | None, typer.Option(help="Continue from a previous page's cursor.")
+    ] = None,
+) -> None:
+    """Every submission on your account, across every hotkey linked to it. Needs `auth login`."""
+    app_ctx = context(ctx)
+    page = app_ctx.client.list_own_submissions(
+        headers=auth.resolve(app_ctx), limit=limit, cursor=cursor
+    )
+    app_ctx.render.data([_row(item) for item in page.items], title="your submissions")
+    if page.next_cursor:
+        app_ctx.render.note(f"More: `conjectures submissions mine --cursor {page.next_cursor}`")
+
+
+def _row(summary: models.SubmissionSummary) -> dict[str, object]:
+    return {
+        "submission_id": str(summary.id),
+        "hotkey": summary.hotkey,
+        "task_id": summary.task_id,
+        "verification_status": summary.verification_status,
+        "manual_review_status": summary.manual_review_status,
+        "reward_status": summary.reward_status,
+        "bounty_amount_rao": summary.bounty_amount_rao,
+        "created_at": summary.created_at,
+    }
 
 
 def _read(app_ctx: AppContext, submission_id: str) -> models.SubmissionStatus:

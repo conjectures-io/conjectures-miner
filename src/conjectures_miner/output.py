@@ -1,7 +1,11 @@
 """Rendering. The only module that writes to stdout.
 
 Exactly one JSON document reaches stdout per command; everything else -- progress, previews,
-warnings, errors -- goes to stderr, so `... --output json | jq` works.
+warnings, errors -- goes to stderr, so `... --output json | jq` works. `data` is therefore called
+once per command, and a second call is a bug rather than an addition: it appends a second document
+to the same stream and every reader of the first one breaks.
+
+`plain` is the deliberate exception, for a command whose whole output is one value to be piped.
 """
 
 from __future__ import annotations
@@ -37,6 +41,16 @@ class Renderer:
             print(_dumps(jsonable(payload)), file=sys.stdout)
         else:
             self._table(payload, title, self._out)
+
+    def plain(self, text: str) -> None:
+        """One bare line on stdout, in both formats. For a value meant to be piped.
+
+        The one documented exception to a JSON document per command, and it exists so that
+        `$(conjectures auth token)` yields the token itself: a quoted JSON string would have to
+        be unquoted by every caller, and `| xclip` would copy the quotes. Like `git rev-parse`,
+        the output *is* the value. Call it instead of `data`, never as well as.
+        """
+        print(text, file=sys.stdout)
 
     def preview(self, payload: Any, *, title: str | None = None) -> None:
         """What is about to happen, for a human to read before confirming."""
