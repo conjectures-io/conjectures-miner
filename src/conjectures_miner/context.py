@@ -15,7 +15,7 @@ from conjectures_miner.api.client import ApiClient
 from conjectures_miner.cache import TaskCache
 from conjectures_miner.output import Renderer
 from conjectures_miner.settings import Settings
-from conjectures_miner.signing import Signer, hotkey_address, load_signer
+from conjectures_miner.signing import Signer, coldkey_address, load_signer
 from conjectures_miner.state import StateStore
 
 
@@ -44,8 +44,8 @@ class AppContext:
     def signer(self) -> Signer:
         return load_signer(self.settings, uri=self.uri)
 
-    def hotkey_address(self, explicit: str | None = None) -> str:
-        return hotkey_address(self.settings, uri=self.uri, explicit=explicit)
+    def coldkey_address(self, explicit: str | None = None) -> str:
+        return coldkey_address(self.settings, uri=self.uri, explicit=explicit)
 
     def close(self) -> None:
         if "client" in self.__dict__:

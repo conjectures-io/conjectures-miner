@@ -60,7 +60,9 @@ def main(
     ctx: typer.Context,
     api: Annotated[str | None, typer.Option(help="Validator base URL.")] = None,
     wallet: Annotated[str | None, typer.Option(help="Bittensor wallet name.")] = None,
-    hotkey: Annotated[str | None, typer.Option(help="Hotkey name within that wallet.")] = None,
+    hotkey: Annotated[
+        str | None, typer.Option(help="Legacy wallet hotkey name; signing uses the coldkey.")
+    ] = None,
     wallet_path: Annotated[Path | None, typer.Option(help="Override the wallet directory.")] = None,
     uri: Annotated[
         str | None,

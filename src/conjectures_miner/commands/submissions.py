@@ -1,8 +1,8 @@
 """`conjectures submissions` -- what happened to a submission.
 
-`show` and `report` use the read signature scheme, not the submit one: a hotkey may read only its
+`show` and `report` use the read signature scheme, not the submit one: a coldkey may read only its
 own. `mine` is scoped differently and deliberately -- it authenticates as the *account*, with the
-session token `conjectures auth login` stores, which is why it can list submissions made by hotkeys
+session token `conjectures auth login` stores, which is why it can list submissions made by coldkeys
 this CLI is not currently pointed at. No per-request signature can ask that question, because a
 signature names a key and the answer is keyed by account.
 """
@@ -78,7 +78,7 @@ def mine(
         str | None, typer.Option(help="Continue from a previous page's cursor.")
     ] = None,
 ) -> None:
-    """Every submission on your account, across every hotkey linked to it. Needs `auth login`."""
+    """Every submission on your account, across every coldkey linked to it. Needs `auth login`."""
     app_ctx = context(ctx)
     page = app_ctx.client.list_own_submissions(
         headers=auth.resolve(app_ctx), limit=limit, cursor=cursor
@@ -91,7 +91,7 @@ def mine(
 def _row(summary: models.SubmissionSummary) -> dict[str, object]:
     return {
         "submission_id": str(summary.id),
-        "hotkey": summary.hotkey,
+        "signer_coldkey": summary.signer_coldkey,
         "task_id": summary.task_id,
         "verification_status": summary.verification_status,
         "manual_review_status": summary.manual_review_status,

@@ -57,7 +57,7 @@ def refusal(*args: str) -> BaseException:
 def submission_response(submission_id: str) -> dict:
     return {
         "submission_id": submission_id,
-        "hotkey": HOTKEY,
+        "signer_coldkey": HOTKEY,
         "task_id": TASK_ID,
         "task_bundle_sha256": TASK_DIGEST,
         "proof_sha256": digest.sha256_prefixed(PROOF),
@@ -164,7 +164,7 @@ def test_build_is_offline_and_names_the_task_by_prefix(
         str(proof_file),
         "--task",
         "erdos89",
-        "--hotkey-ss58",
+        "--coldkey-ss58",
         HOTKEY,
         "--output",
         str(tmp_path / "submission.zip"),
@@ -174,7 +174,7 @@ def test_build_is_offline_and_names_the_task_by_prefix(
     assert built["task_id"] == TASK_ID
     assert built["task_bundle_sha256"] == TASK_DIGEST
     assert built["proof_sha256"] == digest.sha256_prefixed(PROOF)
-    assert read_manifest(tmp_path / "submission.zip")["miner_hotkey"] == HOTKEY
+    assert read_manifest(tmp_path / "submission.zip")["miner_coldkey"] == HOTKEY
     # One request in total: the sync. Building itself touched no network.
     assert len(httpx_mock.get_requests()) == 1
 
@@ -190,7 +190,7 @@ def test_the_plan_records_what_it_takes_to_submit_and_an_empty_payment_slot(
         str(proof_file),
         "--task",
         TASK_ID,
-        "--hotkey-ss58",
+        "--coldkey-ss58",
         HOTKEY,
         "--output",
         str(tmp_path / "submission.zip"),
@@ -220,7 +220,7 @@ def test_check_sends_the_archive_and_reads_identity_out_of_its_manifest(
     assert request is not None
     assert request.headers["X-Conjectures-Task-Id"] == TASK_ID
     assert request.headers["X-Conjectures-Task-Sha256"] == TASK_DIGEST
-    assert request.headers["X-Conjectures-Hotkey"] == HOTKEY
+    assert request.headers["X-Conjectures-Coldkey"] == HOTKEY
     assert request.headers["Content-Type"] == "application/zip"
 
 
@@ -251,7 +251,7 @@ def test_submit_signs_the_canonical_request_digest(built: tuple[Path, Path], htt
     assert request is not None
     assert request.content == archive_path.read_bytes()
     expected = digest.request_digest(
-        hotkey=HOTKEY,
+        signer_coldkey=HOTKEY,
         task_id=TASK_ID,
         task_bundle_sha256=TASK_DIGEST,
         proof_sha256=digest.sha256_prefixed(PROOF),
@@ -395,7 +395,7 @@ def test_dev_signature_sends_the_marker_and_opens_no_key(
     request = httpx_mock.get_request()
     assert request is not None
     assert bytes.fromhex(request.headers["X-Conjectures-Signature"]) == signing.DEVELOPMENT_MARKER
-    assert request.headers["X-Conjectures-Hotkey"] == HOTKEY
+    assert request.headers["X-Conjectures-Coldkey"] == HOTKEY
 
 
 def test_the_real_signature_is_what_you_get_without_the_flag(
@@ -412,7 +412,7 @@ def test_the_real_signature_is_what_you_get_without_the_flag(
     assert bytes.fromhex(request.headers["X-Conjectures-Signature"]) != signing.DEVELOPMENT_MARKER
 
 
-def test_submit_refuses_when_the_archive_commits_to_another_hotkey(built: tuple[Path, Path]):
+def test_submit_refuses_when_the_archive_commits_to_another_coldkey(built: tuple[Path, Path]):
     _, plan_path = built
     error = refusal(
         "--uri", "//Bob", "submit", "--plan", str(plan_path), "--payment-ref", PAYMENT, "--yes"
@@ -450,7 +450,7 @@ def test_build_refuses_to_discard_a_payment_a_plan_already_carries(
         TASK_ID,
         "--task-sha256",
         TASK_DIGEST,
-        "--hotkey-ss58",
+        "--coldkey-ss58",
         HOTKEY,
         "--output",
         str(tmp_path / "submission.zip"),
@@ -517,8 +517,8 @@ def test_reading_a_submission_signs_the_read_message_not_the_request_digest(
 
     request = httpx_mock.get_request()
     assert request is not None
-    assert request.headers["X-Conjectures-Hotkey"] == HOTKEY
-    expected = digest.read_message(hotkey_ss58=HOTKEY, submission_id=submission_id)
+    assert request.headers["X-Conjectures-Coldkey"] == HOTKEY
+    expected = digest.read_message(coldkey_ss58=HOTKEY, submission_id=submission_id)
     assert _verifies(request.headers["X-Conjectures-Signature"], expected)
 
 
@@ -531,3 +531,41 @@ def test_a_report_that_does_not_exist_yet_is_reported_as_normal(httpx_mock: HTTP
     )
     result = invoke(*ALICE, "submissions", "report", submission_id)
     assert result.exit_code == 1
+
+
+def test_default_wallet_signs_with_coldkey_and_never_opens_hotkey(
+    built: tuple[Path, Path], httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
+):
+    from bittensor.sp_core import Keypair
+
+    class Wallet:
+        coldkeypub = Keypair.create_from_uri("//Alice")
+        coldkey = coldkeypub
+
+        @property
+        def hotkey(self):
+            pytest.fail("submission opened the retired hotkey signer")
+
+    monkeypatch.setattr(signing, "_wallet", lambda _: Wallet())
+    httpx_mock.add_response(
+        url=f"{API}/v1/submissions", status_code=201, json=submission_response(str(uuid.uuid4()))
+    )
+    succeed("submit", "--plan", str(built[1]), "--payment-ref", PAYMENT, "--yes")
+    request = httpx_mock.get_request()
+    assert request is not None
+    assert request.headers["X-Conjectures-Coldkey"] == HOTKEY
+    assert "X-Conjectures-Hotkey" not in request.headers
+
+
+def test_declining_submission_does_not_unlock_coldkey(
+    built: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        "conjectures_miner.context.load_signer", lambda *_args, **_kwargs: pytest.fail("unlocked")
+    )
+    monkeypatch.setattr("conjectures_miner.output.Renderer.confirm", lambda *_: False)
+    result = runner.invoke(
+        app, [*ALICE, "submit", "--plan", str(built[1]), "--payment-ref", PAYMENT], input="n\n"
+    )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, SystemExit)

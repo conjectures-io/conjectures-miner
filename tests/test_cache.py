@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from tests.conftest import API, HOTKEY, TASK_DIGEST
 
 from conjectures_miner.cache import (
     AmbiguousTaskError,
@@ -15,6 +14,7 @@ from conjectures_miner.cache import (
     TaskCacheFile,
     UnknownTaskError,
 )
+from tests.conftest import API, HOTKEY, TASK_DIGEST
 
 
 def cache_with(tmp_path: Path, *task_ids: str, api: str = API) -> TaskCache:

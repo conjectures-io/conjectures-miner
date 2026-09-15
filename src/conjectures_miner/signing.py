@@ -1,39 +1,4 @@
-"""Wallet loading and the headers each authenticated call needs.
-
-This tool's key handling. Commands ask for headers or for a validated signature; they never see a
-keypair. Nearly everything is the hotkey's work -- the validator checks on-chain that the paying
-coldkey owns the submitting hotkey, so everything it *authenticates* about a submission is signed
-by the hotkey alone.
-
-Five distinct things get signed, and they are not interchangeable:
-
-    request_digest      authorise one paid submission     hotkey    32 raw bytes of SHA-256
-    read_message        read one submission's status      hotkey    `conjectures-read-v1:...`
-    a session challenge mint a website session token      hotkey    the validator's UTF-8 message
-    a link challenge    attach this hotkey to an account  hotkey    the validator's UTF-8 message
-    a login challenge   open a browser session            coldkey   the validator's UTF-8 message
-
-The first two this module composes itself, from `digest.py`. The last three it does not compose at
-all: `challenge_signature` signs bytes it was handed, because the validator stores the message it
-minted and verifies against that stored copy. A locally rebuilt message that differs by one byte
-fails.
-
-**Signing bytes from the network is only safe because they are checked first.** A tool that signs
-whatever a server sends is a signing oracle across every prefix above, and the two that matter
-most are `conjectures-hotkey-link-v1` -- a signature over which attaches this hotkey to whichever
-account asked for the challenge -- and `conjectures-deposit-claim-v1`, which the coldkey signs to
-claim a transfer. A typo'd `--api`, a poisoned `CONJECTURES_API_BASE_URL` baked into an image, or
-a hostile validator would be enough. So the three `assert_*_challenge` guards run *before* a key
-is unlocked, and each refuses anything that is not the message it names, for the address it is
-about, from the deployment we meant to talk to. Validate the shape, then sign the bytes exactly as
-received: both halves, or neither is worth much.
-
-**The coldkey is opened by two commands and no others.** `conjectures pay` signs a transfer, via
-`chain.load_coldkey_wallet` -- moving funds needs the account that holds them. `conjectures auth
-register` signs a login challenge, via `load_coldkey` here -- an account is claimed by the coldkey
-because a hotkey must never be able to claim one for itself. Everything else in this tool runs
-with the hotkey, which is the one Bittensor stores unencrypted.
-"""
+"""Coldkey authentication for submissions, reads, account registration and CLI sessions."""
 
 from __future__ import annotations
 
@@ -62,7 +27,7 @@ class Signer(Protocol):
 
 @dataclass(frozen=True)
 class DevelopmentSigner:
-    """The marker a non-production validator accepts, for a hotkey on its allowlist.
+    """The marker a non-production validator accepts, for a coldkey on its allowlist.
 
     Holds an address and no key, because the marker is a constant -- so this mode never opens a
     private key, and what it produces is worthless against a production validator.
@@ -76,44 +41,23 @@ class DevelopmentSigner:
 
 
 def load_signer(settings: Settings, *, uri: str | None = None) -> Signer:
-    """Open a hotkey for signing."""
+    """Open the submitting coldkey, or the explicitly requested development marker."""
     if settings.dev_signature:
-        return DevelopmentSigner(hotkey_address(settings, uri=uri))
-    if uri:
-        return _development_keypair(settings, uri)
-    try:
-        return _wallet(settings).hotkey
-    except Exception as exc:
-        raise ConfigError(
-            f"could not open hotkey {settings.wallet_name}/{settings.wallet_hotkey}: {exc}",
-            hint="Check --wallet and --hotkey, or pass --wallet-path.",
-        ) from exc
+        return DevelopmentSigner(coldkey_address(settings, uri=uri))
+    return load_coldkey(settings, uri=uri)
 
 
-def hotkey_address(
+def coldkey_address(
     settings: Settings, *, uri: str | None = None, explicit: str | None = None
 ) -> str:
-    """The SS58 address, without unlocking anything -- `build` and `check` need no private key."""
-    if explicit:
-        return explicit
-    if uri:
-        return _development_keypair(settings, uri).ss58_address
-    try:
-        return _wallet(settings).hotkeypub.ss58_address
-    except Exception as exc:
-        raise ConfigError(
-            f"could not read hotkey {settings.wallet_name}/{settings.wallet_hotkey}: {exc}",
-            hint="Check --wallet and --hotkey, or pass the address with --hotkey-ss58.",
-        ) from exc
-
-
-def coldkey_address(settings: Settings, *, uri: str | None = None) -> str:
     """The coldkey's SS58 address, read from `coldkeypub` so nothing is unlocked.
 
     `auth register` needs this to *request* a challenge, and a challenge the validator refuses --
     rate limited, malformed address -- must cost no passphrase prompt. The private half is opened
     only once there is a validated message to sign.
     """
+    if explicit:
+        return explicit
     if uri:
         return _development_keypair(settings, uri).ss58_address
     try:
@@ -126,16 +70,7 @@ def coldkey_address(settings: Settings, *, uri: str | None = None) -> str:
 
 
 def load_coldkey(settings: Settings, *, uri: str | None = None) -> Signer:
-    """Open the coldkey for signing. Prompts for the passphrase.
-
-    One of two places in this tool that opens a coldkey -- see the module docstring. Registering
-    is a coldkey action because an account has to be claimed by the key that owns the funds; a
-    hotkey claiming one would make a stolen hotkey a way *in* rather than merely a way to work.
-
-    `dev_signature` is refused here rather than at the call site, because the marker is a
-    constant: it cannot verify against a nonce, and the coldkey is the one key where "it signed
-    something, just not what you think" must never be a possible outcome.
-    """
+    """Open the coldkey for a real signature, prompting for its passphrase."""
     if settings.dev_signature:
         raise ConfigError(
             "--dev-signature cannot register: it sends a fixed marker, not a signature",
@@ -149,8 +84,7 @@ def load_coldkey(settings: Settings, *, uri: str | None = None) -> Signer:
     except Exception as exc:
         raise ConfigError(
             f"could not open the coldkey of wallet {settings.wallet_name}: {exc}",
-            hint="Check --wallet and --wallet-path. Registering needs the coldkey, unlike every "
-            "other command except `pay`.",
+            hint="Check --wallet and --wallet-path. Signing requires the coldkey.",
         ) from exc
 
 
@@ -165,7 +99,7 @@ def submit_headers(
 ) -> dict[str, str]:
     """Headers for `POST /v1/submissions`, signing the canonical request digest."""
     request_digest = digest.request_digest(
-        hotkey=signer.ss58_address,
+        signer_coldkey=signer.ss58_address,
         task_id=task_id,
         task_bundle_sha256=task_bundle_sha256,
         proof_sha256=proof_sha256,
@@ -184,42 +118,30 @@ def submit_headers(
 
 def read_headers(signer: Signer, *, submission_id: str) -> dict[str, str]:
     """Headers for the status and report reads. A different scheme from the submit path."""
-    message = digest.read_message(hotkey_ss58=signer.ss58_address, submission_id=submission_id)
+    message = digest.read_message(coldkey_ss58=signer.ss58_address, submission_id=submission_id)
     return _signed(signer, message)
 
 
 SESSION_PREFIX = "conjectures-cli-session-v1"
-LINK_PREFIX = "conjectures-hotkey-link-v1"
 LOGIN_PREFIX = "conjectures-login-v1"
 
 # What each prefix means, for the refusal message. A miner who mistyped `--api` should be told
 # what they were about to sign, not just that a string did not match.
 _DESCRIPTIONS = {
     SESSION_PREFIX: "a CLI session challenge",
-    LINK_PREFIX: "a hotkey-link challenge",
     LOGIN_PREFIX: "a coldkey login challenge",
 }
 
 
 def assert_session_challenge(message: str, *, address: str, api_root: str) -> None:
-    """Guard the message a hotkey signs to mint a CLI session token."""
+    """Guard the message a coldkey signs to mint a CLI session token."""
     _assert_challenge(message, prefix=SESSION_PREFIX, address=address, api_root=api_root)
-
-
-def assert_link_challenge(message: str, *, address: str, api_root: str) -> None:
-    """Guard the message a hotkey signs to be attached to an account.
-
-    The one message in this tool whose *misuse* creates an ownership fact rather than a session:
-    a signature over a link challenge minted by someone else's browser session attaches this
-    hotkey to their account, which is where submission attribution and reward ownership then go.
-    """
-    _assert_challenge(message, prefix=LINK_PREFIX, address=address, api_root=api_root)
 
 
 def assert_login_challenge(message: str, *, address: str, api_root: str) -> None:
     """Guard the message a coldkey signs to open a browser session.
 
-    The only guard covering the coldkey, and the stakes are the highest here: the same key signs
+    The same key also signs
     `conjectures-deposit-claim-v1`, so an unchecked signature could claim a transfer rather than
     open a session.
     """
@@ -236,7 +158,7 @@ def _assert_challenge(message: str, *, prefix: str, address: str, api_root: str)
     Three checks, and each rules out a distinct substitution:
 
     * **The prefix, on its own first line.** This is what stops the other four messages -- above
-      all `conjectures-hotkey-link-v1`, a signature over which would attach this hotkey to
+      all `conjectures-coldkey-link-v1`, a signature over which would attach this coldkey to
       someone else's account. Matched as the whole first line, not with `startswith`, so a
       longer prefix that merely begins the same way cannot pass.
     * **The address is ours.** A challenge minted for another key is not ours to answer, and
@@ -296,7 +218,7 @@ def _challenge_fields(lines: list[str]) -> dict[str, str]:
 
 
 def challenge_signature(signer: Signer, message: str) -> str:
-    """Sign one of the three challenges, as hex. The message is the validator's, byte for byte.
+    """Sign a validated challenge, as hex. The message is the validator's, byte for byte.
 
     The caller must have run the matching `assert_*_challenge` first -- this signs what it is
     given. That split is deliberate: validation happens before a key is unlocked, and by the time
@@ -321,7 +243,7 @@ def bearer_headers(token: str) -> dict[str, str]:
 
 def _signed(signer: Signer, message: bytes) -> dict[str, str]:
     return {
-        "X-Conjectures-Hotkey": signer.ss58_address,
+        "X-Conjectures-Coldkey": signer.ss58_address,
         "X-Conjectures-Timestamp": str(int(time.time() * 1000)),
         "X-Conjectures-Signature": signer.sign(message).hex(),
     }

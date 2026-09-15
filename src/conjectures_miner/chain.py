@@ -1,7 +1,7 @@
 """Reading Subtensor, and making the one transfer that buys a submission.
 
 The only module that spends money, and the only one that opens a coldkey. Everything else in
-this tool is either free or signed by the hotkey.
+this tool is either free or signs an off-chain request with the coldkey.
 
 Four decisions here are correctness properties rather than style, and each mirrors what the
 validator does when it confirms the payment (`conjectures_subnet/transfers.py`). Getting one
@@ -378,9 +378,8 @@ def _sleep(seconds: float) -> None:
 def load_coldkey_wallet(settings: Any) -> Any:
     """Open the wallet whose coldkey pays.
 
-    The only place this tool touches a coldkey, and it never leaves the process: what goes on
-    chain is a signed extrinsic. `signing.py` handles the hotkey, which is all every other
-    command needs.
+    The key stays in the process; the chain receives a signed extrinsic.
+    `signing.py` handles coldkey signatures for the API.
     """
     from bittensor.wallet import Wallet
 
@@ -391,7 +390,6 @@ def load_coldkey_wallet(settings: Any) -> Any:
     except Exception as exc:
         raise CliError(
             f"could not open the coldkey of wallet {settings.wallet_name}: {exc}",
-            hint="Check --wallet and --wallet-path. Paying needs the coldkey, unlike every "
-            "other command.",
+            hint="Check --wallet and --wallet-path. Paying needs the coldkey.",
         ) from exc
     return wallet

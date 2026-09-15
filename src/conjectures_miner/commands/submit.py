@@ -3,7 +3,7 @@
     build   write the archive and the plan       local, offline, no key unlock
     check   would the validator take this?       free, no auth, no key unlock
     pay     the submission price                 coldkey, on chain, irreversible
-    submit  spend the payment                    hotkey-signed, irreversible
+    submit  spend the payment                    coldkey-signed, irreversible
 
 `pay` records its reference on the plan, so `--payment-ref` is needed here only for a payment
 made outside this tool. It stays a separate command deliberately: merging the two would make
@@ -50,8 +50,8 @@ def build(
     task_sha256: Annotated[
         str | None, typer.Option(help="Use this digest, and take --task as a literal task id.")
     ] = None,
-    hotkey_ss58: Annotated[
-        str | None, typer.Option(help="Override the manifest hotkey address.")
+    coldkey_ss58: Annotated[
+        str | None, typer.Option(help="Override the manifest coldkey address.")
     ] = None,
     solver_name: Annotated[str | None, typer.Option()] = None,
     solver_version: Annotated[str | None, typer.Option()] = None,
@@ -79,7 +79,7 @@ def build(
     manifest = bundle_module.build_manifest(
         task_id=task_id,
         task_bundle_sha256=digest,
-        hotkey_ss58=app_ctx.hotkey_address(hotkey_ss58),
+        coldkey_ss58=app_ctx.coldkey_address(coldkey_ss58),
         proof=proof_bytes,
         solver_name=solver_name,
         solver_version=solver_version,
@@ -119,14 +119,14 @@ def build(
             "proof_sha256": archive.proof_sha256,
             "task_id": task_id,
             "task_bundle_sha256": digest,
-            "miner_hotkey": archive.miner_hotkey,
+            "miner_coldkey": archive.miner_coldkey,
             "plan": str(written),
         },
         title="built",
     )
     app_ctx.render.note(
         "Next: `conjectures verify` -- the real verifier over this bundle, locally and for free. "
-        "Then `conjectures check`, which is about the envelope and never reads the proof."
+        "Then `conjectures check` for archive and static proof policy checks."
     )
 
 
@@ -146,7 +146,7 @@ def check(
         archive=archive.raw,
         task_id=archive.task_id,
         task_bundle_sha256=archive.task_bundle_sha256,
-        hotkey_ss58=archive.miner_hotkey,
+        coldkey_ss58=archive.miner_coldkey,
     )
     app_ctx.render.data(
         {
@@ -164,8 +164,8 @@ def check(
         # A refusal is a successful call, but the exit code has to gate `check && submit`.
         raise typer.Exit(1)
     app_ctx.render.note(
-        "Preflight passed: the envelope is acceptable. Nothing here read the proof -- "
-        "`conjectures verify` is the one that does."
+        "Preflight passed: archive and static proof policy checks passed. "
+        "`conjectures verify` checks the Lean proof."
     )
 
 
@@ -213,22 +213,22 @@ def submit(
             "only a development validator will accept it.[/]"
         )
 
-    signer = app_ctx.signer
+    address = app_ctx.coldkey_address()
     if app_ctx.settings.dev_signature:
         app_ctx.render.note(
             "[yellow]--dev-signature: sending the development marker, not a signature. "
-            "Only a validator outside PROD accepts it, and only for an allowlisted hotkey.[/]"
+            "Only a validator outside PROD accepts it, and only for an allowlisted coldkey.[/]"
         )
-    if archive.miner_hotkey != signer.ss58_address:
+    if archive.miner_coldkey != address:
         raise CliError(
-            f"the archive commits to {archive.miner_hotkey} but {signer.ss58_address} is signing",
-            hint="Rebuild with the signing hotkey, or point --wallet/--hotkey at the bundle's.",
+            f"the archive commits to {archive.miner_coldkey} but {address} is signing",
+            hint="Rebuild with the signing coldkey, or point --wallet at the bundle's.",
         )
 
     # Persisted before anything is sent: a key that exists only after a successful response is
     # useless for the case it exists to serve.
     record = app_ctx.state.reserve(
-        hotkey=signer.ss58_address,
+        coldkey=address,
         task_id=archive.task_id,
         task_bundle_sha256=archive.task_bundle_sha256,
         proof_sha256=archive.proof_sha256,
@@ -242,13 +242,16 @@ def submit(
             "proof_sha256": archive.proof_sha256,
             "payment_reference": payment_reference,
             "idempotency_key": record.idempotency_key,
-            "hotkey": signer.ss58_address,
+            "coldkey": address,
         },
         title="about to submit",
     )
     if not yes and not app_ctx.render.confirm("Spend this payment?"):
         raise typer.Abort
 
+    signer = app_ctx.signer
+    if signer.ss58_address != address:
+        raise CliError("the unlocked coldkey does not match the archive's coldkey")
     status = app_ctx.client.submit(
         archive=archive.raw,
         headers=submit_headers(

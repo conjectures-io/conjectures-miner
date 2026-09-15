@@ -4,7 +4,7 @@ The archive is built exactly once and never rebuilt. The plan points at it, reco
 and carries the payment slot a later `conjectures pay` will fill. Building once means nothing has
 to reproduce a byte-identical zip afterwards, and what `check` approved is literally what `submit`
 sends. Identity is not the plan's to decide: `task_id`, `task_bundle_sha256`, `proof_sha256` and
-`miner_hotkey` live in the archive's own manifest, because that is the copy the validator parses
+`miner_coldkey` live in the archive's own manifest, because that is the copy the validator parses
 and cross-checks against the authenticated request.
 """
 

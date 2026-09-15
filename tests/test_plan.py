@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 import pytest
-from tests.conftest import HOTKEY, PROOF, TASK_DIGEST, TASK_ID
 
 from conjectures_miner import bundle, plan
+from tests.conftest import HOTKEY, PROOF, TASK_DIGEST, TASK_ID
 
 
 def test_load_returns_the_archive_a_plan_points_at(built: tuple[Path, Path]):
@@ -25,7 +25,7 @@ def test_a_replaced_archive_is_refused(built: tuple[Path, Path]):
     other = bundle.build_manifest(
         task_id=TASK_ID,
         task_bundle_sha256=TASK_DIGEST,
-        hotkey_ss58=HOTKEY,
+        coldkey_ss58=HOTKEY,
         proof=PROOF + b"-- changed\n",
     )
     bundle.write(archive_path, manifest=other, proof=PROOF + b"-- changed\n")
@@ -72,7 +72,7 @@ def test_a_bare_archive_needs_no_plan(built: tuple[Path, Path]):
     archive_path, _ = built
     loaded = plan.load(None, archive_path)
     assert loaded.plan is None
-    assert loaded.archive.miner_hotkey == HOTKEY
+    assert loaded.archive.miner_coldkey == HOTKEY
 
 
 def test_a_missing_plan_says_what_to_run(tmp_path: Path):

@@ -24,7 +24,7 @@ def test_read_message_matches_the_validator():
 
 
 def _read_preimage(inputs: dict[str, str]) -> bytes:
-    return f"{digest.READ_DOMAIN}:{inputs['hotkey_ss58']}:{inputs['submission_id']}".encode()
+    return f"{digest.READ_DOMAIN}:{inputs['coldkey_ss58']}:{inputs['submission_id']}".encode()
 
 
 def test_read_message_returns_the_raw_bytes_that_get_signed():

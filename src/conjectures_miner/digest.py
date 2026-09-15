@@ -36,18 +36,18 @@ def canonical_json(value: Any) -> bytes:
 
 def request_digest(
     *,
-    hotkey: str,
+    signer_coldkey: str,
     task_id: str,
     task_bundle_sha256: str,
     proof_sha256: str,
     payment_reference: str,
     idempotency_key: str,
 ) -> str:
-    """The message a submission's hotkey signs."""
+    """The message a submission's coldkey signs."""
     return sha256_prefixed(
         canonical_json(
             {
-                "hotkey": hotkey,
+                "signer_coldkey": signer_coldkey,
                 "idempotency_key": idempotency_key,
                 "payment_reference": payment_reference,
                 "proof_sha256": proof_sha256,
@@ -58,6 +58,6 @@ def request_digest(
     )
 
 
-def read_message(*, hotkey_ss58: str, submission_id: str) -> bytes:
+def read_message(*, coldkey_ss58: str, submission_id: str) -> bytes:
     """The message a status or report read signs. Not interchangeable with `request_digest`."""
-    return hashlib.sha256(f"{READ_DOMAIN}:{hotkey_ss58}:{submission_id}".encode()).digest()
+    return hashlib.sha256(f"{READ_DOMAIN}:{coldkey_ss58}:{submission_id}".encode()).digest()

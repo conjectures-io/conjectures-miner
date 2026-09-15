@@ -44,7 +44,7 @@ class Session(BaseModel):
     expires_at: datetime
     # Which validator minted it. Not decoration: `matches` is what keeps it from reaching another.
     api_base_url: str
-    hotkey: str
+    coldkey: str
     account_id: str
 
 
@@ -112,7 +112,7 @@ def require(settings: Settings) -> Session:
     if stored is None:
         raise ConfigError(
             "not signed in",
-            hint="Run `conjectures auth login`. It needs a hotkey already linked to your "
+            hint="Run `conjectures auth login`. It needs a coldkey already linked to your "
             "conjectures.io account.",
         )
     if not matches(stored, settings.api_root):

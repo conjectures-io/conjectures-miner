@@ -46,7 +46,7 @@ def proof_file(tmp_path: Path) -> Path:
 def built(tmp_path: Path) -> tuple[Path, Path]:
     """An archive and the plan that vouches for it, without going through the CLI."""
     manifest = bundle.build_manifest(
-        task_id=TASK_ID, task_bundle_sha256=TASK_DIGEST, hotkey_ss58=HOTKEY, proof=PROOF
+        task_id=TASK_ID, task_bundle_sha256=TASK_DIGEST, coldkey_ss58=HOTKEY, proof=PROOF
     )
     archive_path = tmp_path / "submission.zip"
     archive = bundle.write(archive_path, manifest=manifest, proof=PROOF)

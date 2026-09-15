@@ -71,20 +71,18 @@ def challenge_response(
     }
 
 
-def account_response(hotkeys: list[str] | None = None) -> dict:
-    """The account. Holds this hotkey unless told otherwise; `[]` is one that has none yet."""
-    attached = [HOTKEY] if hotkeys is None else hotkeys
+def account_response(coldkeys: list[str] | None = None) -> dict:
+    attached = [HOTKEY] if coldkeys is None else coldkeys
     return {
         "id": ACCOUNT_ID,
         "email": "miner@example.com",
         "email_verified": True,
         "display_name": "a miner",
         "roles": ["MINER"],
-        "payout": {"coldkey": HOTKEY, "hotkey": HOTKEY},
-        "hotkeys": [
-            {"hotkey": key, "linked_at": "2026-01-01T00:00:00Z"} for key in attached
-        ],
-        "wallets": [{"coldkey": HOTKEY, "linked_at": "2026-01-01T00:00:00Z"}],
+        "payout": {"coldkey": HOTKEY},
+        "coldkeys": {"submission_coldkey": None, "payout_coldkey": HOTKEY},
+        "wallets": [{"coldkey": key, "linked_at": "2026-01-01T00:00:00Z"} for key in attached],
+        "identities": [],
         "created_at": "2026-01-01T00:00:00Z",
     }
 
@@ -94,7 +92,7 @@ def session_response(token: str = TOKEN) -> dict:
         "access_token": token,
         "token_type": "bearer",
         "expires_at": _later().isoformat(),
-        "hotkey_scope": HOTKEY,
+        "coldkey_scope": HOTKEY,
         "account": account_response(),
     }
 
@@ -104,7 +102,7 @@ def submission_page(next_cursor: str | None = None) -> dict:
         "items": [
             {
                 "id": str(uuid.uuid4()),
-                "hotkey": HOTKEY,
+                "signer_coldkey": HOTKEY,
                 "task_id": "fc-379fc029-erdos89-erdos-89-c956ed476a-formalized-v1",
                 "proof_sha256": "sha256:" + "b" * 64,
                 "verification_status": "VERIFIED",
@@ -128,7 +126,7 @@ def mock_login(httpx_mock: HTTPXMock, *, message: str = CHALLENGE_MESSAGE) -> No
 
 COLDKEY = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"  # //Bob
 BOB = ["--coldkey-uri", "//Bob"]
-CSRF = "a-csrf-token-bound-to-the-session-row"
+BROWSER_TOKEN = "a-browser-session"
 
 LOGIN_MESSAGE = (
     "conjectures-login-v1\n"
@@ -137,58 +135,22 @@ LOGIN_MESSAGE = (
     "nonce: a-login-nonce\n"
     "expires: 2026-08-12T12:00:00Z\n"
 )
-LINK_MESSAGE = (
-    "conjectures-hotkey-link-v1\n"
-    "domain: conjectures.io\n"
-    f"address: {HOTKEY}\n"
-    "nonce: a-link-nonce\n"
-    "expires: 2026-08-12T12:00:00Z\n"
-)
-# What `/v1/auth/wallet/verify` actually answers with: the credential is in the headers, and only
-# the CSRF half is readable by the client. Two headers, not one -- the validator appends them
-# separately so that neither overwrites the other.
+# Current wallet sign-in sets one HttpOnly session cookie, with no CSRF token.
 SESSION_COOKIES = [
     ("set-cookie", "conjectures_session=a-browser-session; Path=/; HttpOnly"),
-    ("set-cookie", f"conjectures_csrf={CSRF}; Path=/"),
 ]
 
 
-def mock_register(
-    httpx_mock: HTTPXMock,
-    *,
-    login_message: str = LOGIN_MESSAGE,
-    link_message: str = LINK_MESSAGE,
-    already_linked: bool = False,
-    link_status: int = 201,
-    link_json: dict | None = None,
-    expect_link: bool = True,
-) -> None:
-    """The four calls a registration makes, plus the revoke it always ends with.
-
-    Only what the run will actually request is registered: `pytest_httpx` fails a test that
-    mocked a call nobody made, which is the behaviour wanted here -- a guard that was supposed
-    to refuse before `/v1/me/hotkeys` would otherwise pass silently.
-    """
+def mock_register(httpx_mock: HTTPXMock) -> None:
     httpx_mock.add_response(
         url=f"{API}/v1/auth/wallet/challenge",
-        json=challenge_response(login_message, nonce="a-login-nonce"),
+        json=challenge_response(LOGIN_MESSAGE, nonce="a-login-nonce"),
     )
     httpx_mock.add_response(
         url=f"{API}/v1/auth/wallet/verify",
-        json={"account": account_response([HOTKEY] if already_linked else [])},
+        json={"account": account_response([COLDKEY])},
         headers=SESSION_COOKIES,
     )
-    if not already_linked:
-        httpx_mock.add_response(
-            url=f"{API}/v1/me/hotkeys/challenge",
-            json=challenge_response(link_message, nonce="a-link-nonce"),
-        )
-        if expect_link:
-            httpx_mock.add_response(
-                url=f"{API}/v1/me/hotkeys",
-                status_code=link_status,
-                json=link_json if link_json is not None else account_response([HOTKEY]),
-            )
     httpx_mock.add_response(url=f"{API}/v1/auth/logout", status_code=204)
 
 
@@ -208,7 +170,7 @@ def store(
             access_token=access_token,
             expires_at=expires_at or _later(),
             api_base_url=api_base_url,
-            hotkey=HOTKEY,
+            coldkey=HOTKEY,
             account_id=ACCOUNT_ID,
         )
     )
@@ -220,7 +182,7 @@ def store(
 # is used for one write, that it is revoked on every path out, and that it never reaches disk.
 
 
-def test_register_claims_an_account_and_attaches_the_hotkey(httpx_mock: HTTPXMock):
+def test_register_claims_a_coldkey_account_without_linking_a_hotkey(httpx_mock: HTTPXMock):
     from bittensor.sp_core import Keypair
 
     mock_register(httpx_mock)
@@ -228,24 +190,16 @@ def test_register_claims_an_account_and_attaches_the_hotkey(httpx_mock: HTTPXMoc
 
     assert registered["account_id"] == ACCOUNT_ID
     assert registered["coldkey"] == COLDKEY
-    assert registered["linked_hotkeys"] == [HOTKEY]
+    assert registered["linked_coldkeys"] == [COLDKEY]
     assert paths(httpx_mock) == [
         "/v1/auth/wallet/challenge",
         "/v1/auth/wallet/verify",
-        "/v1/me/hotkeys/challenge",
-        "/v1/me/hotkeys",
         "/v1/auth/logout",
     ]
 
-    # Two signatures over two different messages by two different keys. Getting these crossed is
-    # the whole failure mode the prefixes exist to prevent, so both are checked against the key
-    # that was supposed to make them.
-    verify, link = httpx_mock.get_requests()[1], httpx_mock.get_requests()[3]
+    verify = httpx_mock.get_requests()[1]
     assert Keypair(ss58_address=COLDKEY).verify(
         LOGIN_MESSAGE.encode("utf-8"), bytes.fromhex(json.loads(verify.content)["signature"])
-    )
-    assert Keypair(ss58_address=HOTKEY).verify(
-        LINK_MESSAGE.encode("utf-8"), bytes.fromhex(json.loads(link.content)["signature"])
     )
 
 
@@ -262,7 +216,7 @@ def test_register_stores_no_credential_anywhere(httpx_mock: HTTPXMock):
 
     assert not session_module.session_file_path().exists()
     written = list(session_module.session_file_path().parent.glob("*"))
-    assert not any(CSRF in path.read_text("utf-8") for path in written if path.is_file())
+    assert not any(BROWSER_TOKEN in path.read_text("utf-8") for path in written if path.is_file())
 
 
 def test_register_revokes_the_browser_session_it_opened(httpx_mock: HTTPXMock):
@@ -271,47 +225,30 @@ def test_register_revokes_the_browser_session_it_opened(httpx_mock: HTTPXMock):
 
     logout = httpx_mock.get_requests()[-1]
     assert logout.url.path == "/v1/auth/logout"
-    # Revoking is a write, so it carries the same session-bound CSRF token the writes did. A
-    # logout that failed the CSRF check would leave the session live and say nothing about it.
-    assert logout.headers["X-Conjectures-CSRF"] == CSRF
+    # Cookie-authenticated writes use the current initiator policy.
+    assert logout.headers["Sec-Fetch-Site"] == "none"
+    assert "X-Conjectures-CSRF" not in logout.headers
 
 
-def test_the_browser_session_is_revoked_even_when_linking_fails(httpx_mock: HTTPXMock):
-    """The path that matters. A failure must not be how a live cookie session gets left behind."""
-    mock_register(
-        httpx_mock,
-        link_status=409,
-        link_json={"reason_code": "HOTKEY_ALREADY_LINKED", "detail": "already linked"},
-    )
-    error = refusal(*ALICE, "auth", "register", *BOB, "--yes")
-
-    assert getattr(error, "reason_code", None) == "HOTKEY_ALREADY_LINKED"
-    assert paths(httpx_mock)[-1] == "/v1/auth/logout"
-    assert "one owner" in str(getattr(error, "hint", ""))
 
 
 def test_registering_twice_changes_nothing(httpx_mock: HTTPXMock):
     """Safe to leave in a setup script: the second run costs a signature and links nothing."""
-    mock_register(httpx_mock, already_linked=True)
+    mock_register(httpx_mock)
     registered = succeed(*ALICE, "auth", "register", *BOB, "--yes")
 
-    assert registered["linked_hotkeys"] == [HOTKEY]
-    assert "/v1/me/hotkeys" not in paths(httpx_mock)
+    assert registered["linked_coldkeys"] == [COLDKEY]
+    assert "/v1/me/coldkeys" not in paths(httpx_mock)
     assert paths(httpx_mock)[-1] == "/v1/auth/logout"
 
 
-def test_the_writes_carry_the_csrf_token_the_sign_in_handed_out(httpx_mock: HTTPXMock):
-    """A cookie is ambient, so the validator binds a second token to the row and demands it.
-
-    The CLI is not a browser and has no cross-site exposure, but the check is the validator's and
-    it applies to the credential rather than to the client -- so a client that cannot echo the
-    token cannot make these writes at all.
-    """
+def test_cookie_logout_uses_current_initiator_policy_without_a_csrf_cookie(httpx_mock: HTTPXMock):
+    """Logout must succeed when wallet sign-in sends no CSRF cookie."""
     mock_register(httpx_mock)
     succeed(*ALICE, "auth", "register", *BOB, "--yes")
 
     for request in httpx_mock.get_requests()[2:]:
-        assert request.headers.get("X-Conjectures-CSRF") == CSRF, request.url.path
+        assert request.headers.get("Sec-Fetch-Site") == "none", request.url.path
         assert "conjectures_session=a-browser-session" in request.headers["cookie"]
 
 
@@ -343,20 +280,6 @@ def test_a_deposit_claim_is_refused_before_the_coldkey_is_unlocked(
     assert "not a coldkey login challenge" in str(error)
 
 
-def test_a_session_challenge_cannot_be_served_as_a_link_challenge(httpx_mock: HTTPXMock):
-    """The second guard, on the message the *hotkey* signs while the browser session is open.
-
-    A session signature is a durable credential; a link signature is an ownership claim. Neither
-    is the other, and the account this command just claimed is not a reason to sign bytes without
-    reading them.
-    """
-    mock_register(httpx_mock, link_message=CHALLENGE_MESSAGE, expect_link=False)
-    error = refusal(*ALICE, "auth", "register", *BOB, "--yes")
-
-    assert "not a hotkey-link challenge" in str(error)
-    assert "/v1/me/hotkeys" not in paths(httpx_mock)
-    # Refused, and still cleaned up: the guard runs inside the block the revoke protects.
-    assert paths(httpx_mock)[-1] == "/v1/auth/logout"
 
 
 def test_a_login_challenge_for_another_coldkey_is_refused(
@@ -377,16 +300,6 @@ def test_a_login_challenge_for_another_coldkey_is_refused(
     assert HOTKEY in str(error)
 
 
-def test_register_refuses_when_the_two_keys_are_the_same(httpx_mock: HTTPXMock):
-    """An account whose coldkey is its own hotkey is not a thing anyone means to create.
-
-    The validator would accept it -- both signatures are over their own prefixes and both verify
-    -- so this has to be refused here, and before any request is made.
-    """
-    error = refusal(*ALICE, "auth", "register", "--coldkey-uri", "//Alice", "--yes")
-    assert getattr(error, "exit_code", None) == 2
-    assert "same key" in str(error)
-    assert not httpx_mock.get_requests()
 
 
 def test_dev_signature_cannot_register(httpx_mock: HTTPXMock):
@@ -434,7 +347,7 @@ def test_login_stores_a_token_only_its_owner_can_read(httpx_mock: HTTPXMock):
     assert stored is not None
     assert stored.access_token == TOKEN
     assert stored.api_base_url == API
-    assert stored.hotkey == HOTKEY
+    assert stored.coldkey == HOTKEY
 
 
 def test_login_signs_the_servers_message_byte_for_byte(httpx_mock: HTTPXMock):
@@ -458,26 +371,26 @@ def test_login_signs_the_servers_message_byte_for_byte(httpx_mock: HTTPXMock):
     )
 
 
-def test_a_hotkey_link_challenge_is_refused_before_the_key_is_unlocked(
+def test_a_coldkey_link_challenge_is_refused_before_the_key_is_unlocked(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ):
     """The signing-oracle test, and the most important one in this file.
 
     A validator that can make this tool sign arbitrary bytes can make it sign
-    `conjectures-hotkey-link-v1` -- and that signature attaches this hotkey to whichever account
+    `conjectures-coldkey-link-v1` -- and that signature attaches this coldkey to whichever account
     asked for the challenge. A typo'd `--api` or a poisoned environment variable is enough. The
     refusal has to happen before the key is unlocked, so nothing is ever signed at all.
     """
 
     def explode(*_args: object, **_kwargs: object):
-        raise AssertionError("the hotkey was unlocked to sign a message of another kind")
+        raise AssertionError("the coldkey was unlocked to sign a message of another kind")
 
     monkeypatch.setattr("conjectures_miner.context.load_signer", explode)
     # Only the challenge is mocked: reaching verify at all would be the bug.
     httpx_mock.add_response(
         url=f"{API}/v1/auth/cli/challenge",
         json=challenge_response(
-            "conjectures-hotkey-link-v1\n"
+            "conjectures-coldkey-link-v1\n"
             "domain: conjectures.io\n"
             f"address: {HOTKEY}\n"
             "nonce: not-a-session-nonce\n"
@@ -490,11 +403,11 @@ def test_a_hotkey_link_challenge_is_refused_before_the_key_is_unlocked(
     assert not session_module.session_file_path().exists()
 
 
-def test_a_challenge_for_another_hotkey_is_refused(
+def test_a_challenge_for_another_coldkey_is_refused(
     httpx_mock: HTTPXMock, monkeypatch: pytest.MonkeyPatch
 ):
     def explode(*_args: object, **_kwargs: object):
-        raise AssertionError("the hotkey was unlocked for a challenge naming another address")
+        raise AssertionError("the coldkey was unlocked for a challenge naming another address")
 
     monkeypatch.setattr("conjectures_miner.context.load_signer", explode)
     other = "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty"
@@ -564,7 +477,7 @@ def test_login_does_not_unlock_the_key_when_the_challenge_is_refused(
     """A refused challenge must cost no passphrase prompt."""
 
     def explode(*_args: object, **_kwargs: object):
-        raise AssertionError("the hotkey was unlocked before there was anything to sign")
+        raise AssertionError("the coldkey was unlocked before there was anything to sign")
 
     monkeypatch.setattr("conjectures_miner.context.load_signer", explode)
     httpx_mock.add_response(
@@ -592,13 +505,13 @@ def test_too_many_challenges_reports_retry_after(httpx_mock: HTTPXMock):
     assert "Retry-After" in str(getattr(error, "hint", ""))
 
 
-def test_an_unlinked_hotkey_is_told_to_register(httpx_mock: HTTPXMock):
+def test_an_unlinked_coldkey_is_told_to_register(httpx_mock: HTTPXMock):
     """The common first-run error, and the only one whose fix is a different command."""
     httpx_mock.add_response(url=f"{API}/v1/auth/cli/challenge", json=challenge_response())
     httpx_mock.add_response(
         url=f"{API}/v1/auth/cli/verify",
         status_code=403,
-        json={"reason_code": "HOTKEY_NOT_LINKED", "detail": "hotkey is not linked"},
+        json={"reason_code": "COLDKEY_NOT_LINKED", "detail": "coldkey is not linked"},
     )
     error = refusal(*ALICE, "auth", "login", "--yes")
     assert getattr(error, "exit_code", None) == 3
@@ -798,7 +711,7 @@ def test_status_confirms_a_live_session_against_the_validator(httpx_mock: HTTPXM
 
     assert reported["live"] is True
     assert reported["display_name"] == "a miner"
-    assert reported["hotkey"] == HOTKEY
+    assert reported["coldkey"] == HOTKEY
     request = httpx_mock.get_request()
     assert request is not None
     assert request.headers["Authorization"] == f"Bearer {TOKEN}"
@@ -934,3 +847,20 @@ def test_a_corrupt_session_file_is_no_session_at_all(httpx_mock: HTTPXMock):
     error = refusal("auth", "status")
     assert getattr(error, "exit_code", None) == 2
     assert not httpx_mock.get_requests()
+
+
+def test_a_session_scoped_to_another_coldkey_is_not_saved(httpx_mock: HTTPXMock):
+    httpx_mock.add_response(url=f"{API}/v1/auth/cli/challenge", json=challenge_response())
+    issued = session_response() | {"coldkey_scope": COLDKEY}
+    httpx_mock.add_response(url=f"{API}/v1/auth/cli/verify", json=issued)
+    error = refusal(*ALICE, "auth", "login", "--yes")
+    assert "different coldkey" in str(error)
+    assert not session_module.session_file_path().exists()
+
+
+def test_legacy_hotkey_session_requires_new_login():
+    path = store()
+    payload = json.loads(path.read_text())
+    payload["hotkey"] = payload.pop("coldkey")
+    path.write_text(json.dumps(payload))
+    assert session_module.load() is None

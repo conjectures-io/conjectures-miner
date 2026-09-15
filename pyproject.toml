@@ -1,6 +1,6 @@
 [project]
 name = "conjectures-miner"
-version = "0.1.0"
+version = "0.2.0"
 description = "Miner CLI for the conjectures.io Subnet 66 Lean-proof validator"
 readme = "README.md"
 requires-python = ">=3.12"

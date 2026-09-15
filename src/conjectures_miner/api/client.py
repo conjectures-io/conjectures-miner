@@ -17,11 +17,6 @@ from conjectures_miner.bundle import BUNDLE_MEDIA_TYPE
 from conjectures_miner.errors import CliError, TransportError, api_error
 from conjectures_miner.settings import Settings
 
-# Named by the validator's `submission_api/sessions.py`. The session cookie itself is HttpOnly and
-# never read here -- httpx sends it back on its own.
-CSRF_COOKIE = "conjectures_csrf"
-CSRF_HEADER = "X-Conjectures-CSRF"
-
 
 class ApiClient:
     def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None) -> None:
@@ -66,7 +61,7 @@ class ApiClient:
     # --- preflight: free, unauthenticated, charges nothing ------------------------------
 
     def preflight(
-        self, *, archive: bytes, task_id: str, task_bundle_sha256: str, hotkey_ss58: str
+        self, *, archive: bytes, task_id: str, task_bundle_sha256: str, coldkey_ss58: str | None
     ) -> models.PreflightResult:
         return self._call(
             "POST",
@@ -78,7 +73,7 @@ class ApiClient:
                 "Content-Type": BUNDLE_MEDIA_TYPE,
                 "X-Conjectures-Task-Id": task_id,
                 "X-Conjectures-Task-Sha256": task_bundle_sha256,
-                "X-Conjectures-Hotkey": hotkey_ss58,
+                **({"X-Conjectures-Coldkey": coldkey_ss58} if coldkey_ss58 else {}),
             },
         )
 
@@ -131,8 +126,8 @@ class ApiClient:
         The nonce goes back with it. It is not the proof -- the signature is, checked against the
         message the validator stored -- but it names *which* challenge is being answered. Without
         it the validator would have to resolve "the newest open challenge for this address", and
-        hotkeys are public on chain: anyone could then request a challenge for someone else's
-        hotkey on a loop and that miner's own signature would never be over the newest message.
+        coldkeys are public on chain: anyone could then request a challenge for someone else's
+        coldkey on a loop and that miner's own signature would never be over the newest message.
         """
         return self._call(
             "POST",
@@ -144,7 +139,7 @@ class ApiClient:
     def logout(self, *, headers: dict[str, str]) -> None:
         """Revoke this session. `204`, so there is no body to validate.
 
-        Serves both credentials: `headers` is the bearer header for a CLI token, or the CSRF
+        Serves both credentials: `headers` is the bearer header for a CLI token, or the initiator
         header for the cookie session `auth register` opens.
         """
         self._send("POST", "/v1/auth/logout", headers=headers)
@@ -152,10 +147,8 @@ class ApiClient:
     # --- the browser flow, used only by `auth register` -----------------------------------
     #
     # A cookie session, not a token, and this client is the browser for as long as one command
-    # runs. `httpx.Client` keeps the jar; nothing here writes it anywhere. The validator restricts
-    # linking a hotkey, repointing the payout and editing the profile to a *cookie* session
-    # precisely because those compose into account takeover, so this is the only way to link --
-    # and the reason the credential is revoked rather than merely dropped when the command ends.
+    # runs. `httpx.Client` keeps the jar; nothing here writes it anywhere.
+    # The temporary cookie is revoked before registration returns.
 
     def wallet_challenge(self, *, address: str) -> models.CliChallenge:
         return self._call(
@@ -168,9 +161,8 @@ class ApiClient:
     def wallet_verify(self, *, address: str, signature: str) -> models.SessionEnvelope:
         """Redeem a coldkey signature for a browser session, creating the account if it is new.
 
-        No nonce goes back, unlike the CLI flow: the validator resolves the latest open challenge
-        for the address. A coldkey is not published the way a hotkey is, so the supersession
-        denial-of-service that forced a nonce onto `/v1/auth/cli/verify` does not apply.
+        Unlike CLI sign-in, this endpoint resolves the latest open challenge for the address
+        and accepts only the address and signature.
         """
         return self._call(
             "POST",
@@ -179,43 +171,9 @@ class ApiClient:
             json={"address": address, "signature": signature},
         )
 
-    def link_challenge(
-        self, *, hotkey: str, headers: dict[str, str]
-    ) -> models.CliChallenge:
-        return self._call(
-            "POST",
-            "/v1/me/hotkeys/challenge",
-            model=models.CliChallenge,
-            headers=headers,
-            json={"hotkey": hotkey},
-        )
-
-    def link_hotkey(
-        self, *, hotkey: str, signature: str, headers: dict[str, str]
-    ) -> models.Account:
-        return self._call(
-            "POST",
-            "/v1/me/hotkeys",
-            model=models.Account,
-            headers=headers,
-            json={"hotkey": hotkey, "signature": signature},
-        )
-
-    def csrf_headers(self) -> dict[str, str]:
-        """The double-submit header every cookie-authenticated write needs.
-
-        The validator binds the CSRF token to the session row rather than merely comparing a
-        cookie to a header, so this value is not something a caller may invent -- it has to be
-        the one the sign-in response set. Absent before sign-in, which is a programming error
-        here rather than a condition to handle at runtime.
-        """
-        token = self._http.cookies.get(CSRF_COOKIE)
-        if token is None:
-            raise CliError(
-                "the validator opened a session without a CSRF token",
-                hint="It is not the API this CLI expects. Check --api.",
-            )
-        return {CSRF_HEADER: token}
+    def browser_write_headers(self) -> dict[str, str]:
+        """Identify this explicit non-browser action for the cookie writer policy."""
+        return {"Sec-Fetch-Site": "none"}
 
     def clear_cookies(self) -> None:
         """Drop the browser session from the jar. Revoking it server-side is the caller's job."""

@@ -22,7 +22,7 @@ def build(tmp_path: Path, **overrides) -> tuple[Path, bundle.Bundle]:
     manifest = bundle.build_manifest(
         task_id=overrides.pop("task_id", TASK_ID),
         task_bundle_sha256=overrides.pop("task_bundle_sha256", TASK_DIGEST),
-        hotkey_ss58=overrides.pop("hotkey_ss58", HOTKEY),
+        coldkey_ss58=overrides.pop("coldkey_ss58", HOTKEY),
         proof=PROOF,
         **overrides,
     )
@@ -84,7 +84,7 @@ def test_solver_is_nested_and_needs_both_halves(tmp_path: Path):
         ("task_id", "Not A Task Id"),
         ("task_bundle_sha256", "sha256:" + "A" * 64),
         # 47 characters: accepted by the API, then refused at INSERT, so it is caught here.
-        ("hotkey_ss58", HOTKEY[:47]),
+        ("coldkey_ss58", HOTKEY[:47]),
     ],
 )
 def test_malformed_identity_is_refused_before_anything_is_written(
@@ -121,7 +121,7 @@ def test_ten_mib_proof_round_trips_in_an_archive_above_the_old_limit(tmp_path: P
     manifest = bundle.build_manifest(
         task_id=TASK_ID,
         task_bundle_sha256=TASK_DIGEST,
-        hotkey_ss58=HOTKEY,
+        coldkey_ss58=HOTKEY,
         proof=proof,
     )
     path = tmp_path / "large.zip"
@@ -138,3 +138,34 @@ def test_reading_something_that_is_not_a_bundle_is_a_refusal(tmp_path: Path):
     path.write_bytes(b"not a zip archive at all")
     with pytest.raises(bundle.BundleError, match="readable archive"):
         bundle.read(path)
+
+
+def test_schema_one_archive_is_refused_with_rebuild_and_payment_guidance(tmp_path: Path):
+    path, built = build(tmp_path)
+    legacy = dict(built.manifest)
+    legacy["schema_version"] = 1
+    legacy["miner_hotkey"] = legacy.pop("miner_coldkey")
+    bundle.write(path, manifest=legacy, proof=PROOF)
+    with pytest.raises(bundle.BundleError, match="schema_version must be 2") as error:
+        bundle.read(path)
+    assert "do not pay again" in (error.value.hint or "")
+
+
+def test_schema_two_keyless_archive_can_be_read_for_preflight(tmp_path: Path):
+    path, built = build(tmp_path)
+    manifest = dict(built.manifest)
+    del manifest["miner_coldkey"]
+    bundle.write(path, manifest=manifest, proof=PROOF)
+    assert bundle.read(path).miner_coldkey is None
+
+
+def test_repetitive_proof_uses_stored_zip_to_stay_within_ratio_policy(tmp_path: Path):
+    proof = b"x\n" * 300_000
+    manifest = bundle.build_manifest(
+        task_id=TASK_ID, task_bundle_sha256=TASK_DIGEST, coldkey_ss58=HOTKEY, proof=proof
+    )
+    path = tmp_path / "repetitive.zip"
+    bundle.write(path, manifest=manifest, proof=proof)
+    with zipfile.ZipFile(path) as archive:
+        assert archive.getinfo(bundle.PROOF_NAME).compress_type == zipfile.ZIP_STORED
+        assert archive.read(bundle.PROOF_NAME) == proof

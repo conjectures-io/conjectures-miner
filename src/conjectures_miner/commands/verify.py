@@ -6,7 +6,7 @@
     verify --status                       report what the last setup left behind
 
 The second and third lines are what nothing else answers. `check` asks the validator whether the
-envelope is acceptable and never reads the proof; only the verifier can say whether the proof
+archive and static proof policy pass; only the verifier can say whether the proof
 proves the stated theorem.
 
 An answer from here is about the proof and not about the submission: the local build runs the

@@ -10,7 +10,7 @@ from typing import Any
 ADVICE: Mapping[str, str] = {
     "PAYMENT_NOT_FINALIZED": (
         "Wait for the transfer to finalize, then retry with the same idempotency key. "
-        "Check the recipient, the amount, and that your coldkey owns this hotkey."
+        "Check the recipient, the amount, and that the signing coldkey sent the payment."
     ),
     "PAYMENT_REFERENCE_AMBIGUOUS": (
         "That extrinsic moved TAO more than once, so it does not name one payment. Retry with the "
@@ -25,19 +25,18 @@ ADVICE: Mapping[str, str] = {
         "Spend the credit instead."
     ),
     "SIGNATURE_INVALID": (
-        "Check that the signing hotkey is the one in the bundle manifest. When submitting to a "
+        "Check that the signing coldkey is the one in the bundle manifest. When submitting to a "
         "validator outside PROD, it may want the static marker instead: pass --dev-signature. "
         "That flag cannot sign you in, though -- `auth login` needs a real signature."
     ),
-    "HOTKEY_NOT_LINKED": (
-        "This hotkey is not attached to a conjectures.io account. Run `conjectures auth register` "
-        "on the machine that holds your coldkey, then `conjectures auth login` again. Linking is "
-        "a coldkey action: a hotkey cannot attach itself to an account."
+    "COLDKEY_NOT_LINKED": (
+        "This coldkey is not attached to a conjectures.io account. Run `conjectures auth register` "
+        "with your coldkey, then `conjectures auth login` again."
     ),
-    "HOTKEY_ALREADY_LINKED": (
-        "Another account already holds this hotkey, and it is not re-parented silently -- a "
-        "submission has one owner and a reward one destination. Register the hotkey you meant "
-        "with --hotkey, or detach it from the other account first."
+    "COLDKEY_ALREADY_LINKED": (
+        "Another account already holds this coldkey, and it is not re-parented silently -- a "
+        "submission has one owner and a reward one destination. Register the coldkey you meant "
+        "with --wallet, or detach it from the other account first."
     ),
     "BROWSER_SESSION_REQUIRED": (
         "That change is refused to a CLI token and accepted only from a browser session, because "
@@ -53,7 +52,7 @@ ADVICE: Mapping[str, str] = {
         "affected: `submit` and `submissions show` sign each request and need no session."
     ),
     "TOO_MANY_CHALLENGES": (
-        "Too many sign-in attempts for that hotkey. Wait out `Retry-After`, then try again. No "
+        "Too many sign-in attempts for that coldkey. Wait out `Retry-After`, then try again. No "
         "key was unlocked and nothing was signed."
     ),
     "TASK_NOT_ALLOWED": (

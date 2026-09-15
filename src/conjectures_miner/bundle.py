@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -20,7 +21,7 @@ from conjectures_miner.digest import is_sha256, sha256_prefixed
 from conjectures_miner.errors import CliError
 
 BUNDLE_FORMAT = "conjectures-submission/v1"
-BUNDLE_SCHEMA_VERSION = 1
+BUNDLE_SCHEMA_VERSION = 2
 BUNDLE_MEDIA_TYPE = "application/zip"
 
 MANIFEST_NAME = "submission.json"
@@ -31,6 +32,8 @@ ENTRY_NAMES = (MANIFEST_NAME, PROOF_NAME)
 # the validator, including the local checkout used by `conjectures verify`.
 MAX_BUNDLE_BYTES = 12 * 1024 * 1024
 MAX_PROOF_BYTES = 10 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
+MAX_MANIFEST_BYTES = 16 * 1024
 
 TASK_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,254}$")
 # Exactly 48, matching the validator: a 47-character address is accepted by the API and then
@@ -72,8 +75,8 @@ class Bundle:
         return str(self.manifest["proof_sha256"])
 
     @property
-    def miner_hotkey(self) -> str:
-        return str(self.manifest["miner_hotkey"])
+    def miner_coldkey(self) -> str | None:
+        return self.manifest.get("miner_coldkey")
 
     @property
     def proof(self) -> bytes:
@@ -100,7 +103,7 @@ def build_manifest(
     *,
     task_id: str,
     task_bundle_sha256: str,
-    hotkey_ss58: str,
+    coldkey_ss58: str,
     proof: bytes,
     solver_name: str | None = None,
     solver_version: str | None = None,
@@ -109,8 +112,8 @@ def build_manifest(
         raise BundleError(f"{task_id!r} is not a valid task id")
     if not is_sha256(task_bundle_sha256):
         raise BundleError(f"{task_bundle_sha256!r} is not a lowercase sha256: digest")
-    if SS58_ADDRESS.fullmatch(hotkey_ss58) is None:
-        raise BundleError(f"{hotkey_ss58!r} is not a valid SS58 address")
+    if SS58_ADDRESS.fullmatch(coldkey_ss58) is None:
+        raise BundleError(f"{coldkey_ss58!r} is not a valid SS58 address")
 
     manifest: dict[str, Any] = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
@@ -120,7 +123,7 @@ def build_manifest(
         "proof_path": PROOF_NAME,
         "proof_sha256": sha256_prefixed(proof),
         "proof_bytes": len(proof),
-        "miner_hotkey": hotkey_ss58,
+        "miner_coldkey": coldkey_ss58,
     }
     if solver_name is not None or solver_version is not None:
         if not (solver_name and solver_version):
@@ -143,7 +146,13 @@ def write(output: Path, *, manifest: dict[str, Any], proof: bytes) -> Bundle:
         with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
             for name, data in ((MANIFEST_NAME, render_manifest(manifest)), (PROOF_NAME, proof)):
                 entry = zipfile.ZipInfo(name, date_time=ZIP_TIMESTAMP)
-                entry.compress_type = zipfile.ZIP_DEFLATED
+                # Highly repetitive Lean must not look like a ZIP bomb to the validator.
+                compressed_size = max(1, len(zlib.compress(data)) - 6)
+                entry.compress_type = (
+                    zipfile.ZIP_STORED
+                    if len(data) > MAX_COMPRESSION_RATIO * compressed_size
+                    else zipfile.ZIP_DEFLATED
+                )
                 entry.create_system = UNIX_CREATE_SYSTEM
                 entry.external_attr = REGULAR_FILE_MODE << 16
                 archive.writestr(entry, data)
@@ -171,6 +180,8 @@ def read(path: Path) -> Bundle:
 
 
 def parse(raw: bytes, *, source: Path | str = "<bytes>") -> Bundle:
+    if len(raw) > MAX_BUNDLE_BYTES:
+        raise BundleError(f"the archive is {len(raw)} bytes; the limit is {MAX_BUNDLE_BYTES}")
     try:
         with zipfile.ZipFile(BytesIO(raw)) as archive:
             names = archive.namelist()
@@ -179,6 +190,8 @@ def parse(raw: bytes, *, source: Path | str = "<bytes>") -> Bundle:
                     f"{source} must hold exactly {', '.join(ENTRY_NAMES)} in that order, "
                     f"found {', '.join(names) or 'nothing'}"
                 )
+            if archive.getinfo(MANIFEST_NAME).file_size > MAX_MANIFEST_BYTES:
+                raise BundleError("the archive's manifest exceeds the 16 KiB limit")
             manifest = json.loads(archive.read(MANIFEST_NAME))
     except (zipfile.BadZipFile, OSError) as exc:
         raise BundleError(f"{source} is not a readable archive: {exc}") from exc
@@ -187,7 +200,20 @@ def parse(raw: bytes, *, source: Path | str = "<bytes>") -> Bundle:
 
     if not isinstance(manifest, dict):
         raise BundleError(f"{source}: {MANIFEST_NAME} must be a JSON object")
-    missing = {"task_id", "task_bundle_sha256", "proof_sha256", "miner_hotkey"} - set(manifest)
+    if (
+        type(manifest.get("schema_version")) is not int
+        or manifest["schema_version"] != BUNDLE_SCHEMA_VERSION
+    ):
+        raise BundleError(
+            f"{source}: submission manifest schema_version must be {BUNDLE_SCHEMA_VERSION}",
+            hint="Rebuild the archive and plan with `conjectures build --coldkey-ss58 ADDRESS`. "
+            "Keep any recorded payment reference; do not pay again.",
+        )
+    if manifest.get("format") != BUNDLE_FORMAT:
+        raise BundleError(f"{source}: format must be {BUNDLE_FORMAT}")
+    if "miner_hotkey" in manifest:
+        raise BundleError(f"{source}: miner_hotkey is obsolete; rebuild with miner_coldkey")
+    missing = {"task_id", "task_bundle_sha256", "proof_sha256"} - set(manifest)
     if missing:
         raise BundleError(f"{source}: {MANIFEST_NAME} is missing {', '.join(sorted(missing))}")
     return Bundle(raw=raw, manifest=manifest)

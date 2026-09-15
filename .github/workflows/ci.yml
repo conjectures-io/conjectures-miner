@@ -1,0 +1,29 @@
+name: CLI compatibility
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: conjectures-io/conjectures-validator
+          ref: main
+          path: validator
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Install validator contract dependencies
+        run: uv pip install --no-deps -e ./validator && uv pip install 'SQLAlchemy==2.0.51'
+      - run: uv run --no-sync ruff check src tests
+      - run: uv run --no-sync pyright
+      - name: Test against validator main
+        run: uv run --no-sync pytest -q
+        env:
+          CONJECTURES_VALIDATOR_ROOT: ${{ github.workspace }}/validator

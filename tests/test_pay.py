@@ -26,7 +26,7 @@ from tests.conftest import API, HOTKEY, task_list_response
 runner = CliRunner()
 JSON = ["--output", "json"]
 
-COLDKEY = "5HMqFHmvUpzuAjEnse3hzMKS5LsFL428hffCfenF2smuGNhs"
+COLDKEY = HOTKEY
 STRANGER = "5EZotmLfrufXYvD6CCGsRRELEFdg9SnjaEzTmaemiBPNofBP"
 PRICE = 500_000_000
 # conftest's task list names HOTKEY as the payment_recipient, so that is the treasury here.
@@ -171,46 +171,26 @@ def test_a_dry_run_checks_everything_and_sends_nothing(
 # --- refusals that would otherwise cost a transfer ------------------------------------------------
 
 
-def test_paying_for_a_hotkey_the_coldkey_does_not_own_is_refused(
-    httpx_mock: HTTPXMock, built: tuple[Path, Path]
+def test_paying_with_a_different_coldkey_is_refused(
+    httpx_mock: HTTPXMock, built: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ):
-    """The validator refuses this at submit time -- after the money has moved."""
     _, plan_path = built
     quote(httpx_mock)
-    FakeChain.instances.clear()
-
-    def owned_by_stranger(network: str) -> FakeChain:
-        chain = FakeChain(network)
-        chain.owner = STRANGER
-        return chain
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("conjectures_miner.commands.pay.chain_module.Chain", owned_by_stranger)
-        error = refusal("pay", "--plan", str(plan_path), "--yes")
-
-    assert "is owned by" in str(error)
+    monkeypatch.setattr(FakeWallet.coldkeypub, "ss58_address", STRANGER)
+    error = refusal("pay", "--plan", str(plan_path), "--yes")
+    assert "does not match the archive's coldkey" in str(error)
+    assert FakeChain.instances[0].sent is None
     assert plan_module.read(plan_path).payment.reference is None
 
 
-def test_paying_for_an_unregistered_hotkey_is_refused(
-    httpx_mock: HTTPXMock, built: tuple[Path, Path]
+def test_paying_needs_no_registered_hotkey(
+    httpx_mock: HTTPXMock, built: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ):
-    """An unregistered hotkey reads back as the zero account, which `coldkey_of` maps to None.
-    A different fix from "owned by someone else", so a different message."""
     _, plan_path = built
     quote(httpx_mock)
-    FakeChain.instances.clear()
-
-    def unregistered(network: str) -> FakeChain:
-        chain = FakeChain(network)
-        chain.owner = None
-        return chain
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("conjectures_miner.commands.pay.chain_module.Chain", unregistered)
-        error = refusal("pay", "--plan", str(plan_path), "--yes")
-
-    assert "not registered on chain" in str(error)
+    monkeypatch.setattr(FakeChain, "coldkey_of", lambda *_: pytest.fail("queried hotkey owner"))
+    succeed("pay", "--plan", str(plan_path), "--yes")
+    assert plan_module.read(plan_path).payment.reference == REFERENCE
 
 
 def test_paying_twice_against_one_plan_is_refused(httpx_mock: HTTPXMock, built: tuple[Path, Path]):
@@ -288,3 +268,21 @@ def test_reference_reports_a_transfer_that_is_not_there():
         error = refusal("pay", "reference", "--extrinsic", EXTRINSIC_ID)
 
     assert "no finalized transfer" in str(error)
+
+
+def test_recording_a_transfer_from_another_coldkey_is_refused(
+    built: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+):
+    from dataclasses import replace
+
+    original = FakeChain.finalized_transfer
+
+    def other_sender(self, position):
+        transfer = original(self, position)
+        assert transfer is not None
+        return replace(transfer, sender=STRANGER)
+
+    monkeypatch.setattr(FakeChain, "finalized_transfer", other_sender)
+    error = refusal("pay", "reference", "--extrinsic", EXTRINSIC_ID, "--plan", str(built[1]))
+    assert "does not match the archive's coldkey" in str(error)
+    assert plan_module.read(built[1]).payment.reference is None

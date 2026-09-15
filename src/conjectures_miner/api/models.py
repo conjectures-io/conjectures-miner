@@ -113,7 +113,7 @@ class PaymentRecord(Model):
 
 
 class BountyQuote(Model):
-    amount_rao: int
+    amount_rao: int | None
     policy_version: str
 
 
@@ -133,7 +133,7 @@ class SubmissionStatus(Model):
     """Four independent axes, exactly as the validator stores them. None of them implies another."""
 
     submission_id: uuid.UUID
-    hotkey: str
+    signer_coldkey: str | None = None
     task_id: str
     task_bundle_sha256: str
     proof_sha256: str
@@ -176,11 +176,6 @@ class CliChallenge(Model):
     expires_at: datetime
 
 
-class LinkedHotkey(Model):
-    hotkey: str
-    linked_at: datetime
-
-
 class LinkedWallet(Model):
     coldkey: str
     linked_at: datetime
@@ -188,11 +183,15 @@ class LinkedWallet(Model):
 
 class PayoutDestination(Model):
     coldkey: str | None = None
-    hotkey: str | None = None
+
+
+class AccountColdkeys(Model):
+    submission_coldkey: str | None = None
+    payout_coldkey: str | None = None
 
 
 class Account(Model):
-    """Who the session belongs to. An account may hold several hotkeys and several coldkeys."""
+    """Who the session belongs to. An account may hold several linked coldkeys."""
 
     id: uuid.UUID
     email: str | None = None
@@ -201,7 +200,7 @@ class Account(Model):
     roles: tuple[str, ...] = ()
     # Null until set on the website. A reward cannot be paid without it.
     payout: PayoutDestination | None = None
-    hotkeys: tuple[LinkedHotkey, ...] = ()
+    coldkeys: AccountColdkeys = AccountColdkeys()
     wallets: tuple[LinkedWallet, ...] = ()
     created_at: datetime
 
@@ -229,9 +228,9 @@ class CliSession(Model):
     access_token: str
     token_type: str
     expires_at: datetime
-    # The one hotkey this token may act as. An account may own several; a token speaks for the key
+    # The one coldkey this token may act as. An account may own several; a token speaks for the key
     # that minted it, and the validator refuses it for any of the others.
-    hotkey_scope: str
+    coldkey_scope: str
     account: Account
 
 
@@ -243,7 +242,7 @@ class SubmissionSummary(Model):
     """
 
     id: uuid.UUID
-    hotkey: str
+    signer_coldkey: str | None = None
     task_id: str
     proof_sha256: str
     verification_status: str

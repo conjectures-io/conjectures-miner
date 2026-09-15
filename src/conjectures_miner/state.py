@@ -21,7 +21,8 @@ class SubmissionRecord(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     idempotency_key: str
-    hotkey: str
+    coldkey: str | None = None
+    hotkey: str | None = None  # Legacy records remain visible; never used as a signer.
     task_id: str
     task_bundle_sha256: str
     proof_sha256: str
@@ -42,7 +43,7 @@ class StateStore:
     def reserve(
         self,
         *,
-        hotkey: str,
+        coldkey: str,
         task_id: str,
         task_bundle_sha256: str,
         proof_sha256: str,
@@ -51,13 +52,13 @@ class StateStore:
     ) -> SubmissionRecord:
         """The remembered attempt for this proof and payment, persisted before anything is sent."""
         existing = self.find(proof_sha256=proof_sha256, payment_reference=payment_reference)
-        if existing is not None and (
+        if existing is not None and existing.coldkey == coldkey and (
             idempotency_key is None or existing.idempotency_key == idempotency_key
         ):
             return existing
         record = SubmissionRecord(
             idempotency_key=idempotency_key or str(uuid.uuid4()),
-            hotkey=hotkey,
+            coldkey=coldkey,
             task_id=task_id,
             task_bundle_sha256=task_bundle_sha256,
             proof_sha256=proof_sha256,

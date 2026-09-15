@@ -11,14 +11,7 @@ Everything checkable is checked *before* the extrinsic is signed, because afterw
 be undone:
 
 1. the treasury address and the price come from the validator itself, never from local config;
-2. the chain is asked whether the paying coldkey owns the submitting hotkey -- the validator
-   requires that, and it checks after the money has moved;
-3. the plan is read first, so paying for a submission that cannot be sent is caught here;
-4. the operator confirms, unless `--yes`.
-
-Afterwards the transfer is followed to finality and resolved to its canonical
-`block-extrinsic-event` reference, which is written into the plan. `submit` then needs no
-`--payment-ref` at all.
+2. the wallet's coldkey must match the submission archive before a transfer is sent.
 """
 
 from __future__ import annotations
@@ -60,10 +53,6 @@ def pay(
     plan: Annotated[
         Path, typer.Option(help="The plan to record the payment against.")
     ] = DEFAULT_PLAN,
-    hotkey_ss58: Annotated[
-        str | None,
-        typer.Option(help="Check ownership of this hotkey instead of the plan's."),
-    ] = None,
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Run every check and print what would be sent.")
@@ -86,21 +75,22 @@ def pay(
             f"{plan} already cites payment {existing.payment.reference}",
             hint="Send it with `conjectures submit`, or pay against a different plan with --plan.",
         )
-    hotkey = hotkey_ss58 or str(existing.manifest.get("miner_hotkey") or "")
-    if not hotkey:
-        raise CliError(f"{plan} names no miner_hotkey", hint="Rebuild with `conjectures build`.")
+    loaded = plan_module.load(plan, None)
+    expected_coldkey = loaded.archive.miner_coldkey
+    if expected_coldkey is None:
+        raise CliError("this archive is for a browser session; rebuild with --coldkey-ss58")
 
     recipient, price_rao = _quote(app_ctx)
 
     with chain_module.Chain(app_ctx.settings.bittensor_network) as chain:
         wallet = chain_module.load_coldkey_wallet(app_ctx.settings)
         coldkey = str(wallet.coldkeypub.ss58_address)
-        _assert_owns(chain, coldkey=coldkey, hotkey=hotkey)
+        _assert_sender(coldkey, expected_coldkey)
 
         app_ctx.render.preview(
             {
                 "from_coldkey": coldkey,
-                "for_hotkey": hotkey,
+                "submission_coldkey": expected_coldkey,
                 "to_treasury": recipient,
                 "amount_rao": price_rao,
                 "amount_tao": price_rao / RAO_PER_TAO,
@@ -124,6 +114,7 @@ def pay(
         transfer = chain.await_finality(position)
 
     _assert_matches(transfer, recipient=recipient, price_rao=price_rao)
+    _assert_sender(transfer.sender, expected_coldkey)
     plan_module.record_payment(
         plan, reference=transfer.reference, price_rao=price_rao, recipient=recipient
     )
@@ -167,6 +158,8 @@ def reference(
         )
 
     if plan is not None:
+        loaded = plan_module.load(plan, None)
+        _assert_sender(transfer.sender, loaded.archive.miner_coldkey)
         recipient, price_rao = _quote(app_ctx)
         _assert_matches(transfer, recipient=recipient, price_rao=price_rao)
         plan_module.record_payment(
@@ -186,23 +179,12 @@ def reference(
     )
 
 
-def _assert_owns(chain: chain_module.Chain, *, coldkey: str, hotkey: str) -> None:
-    """Refuse before paying if the chain does not say this coldkey owns this hotkey.
-
-    Exactly the check the validator runs when it confirms the payment. Doing it first costs one
-    storage read and turns a lost transfer into a message.
-    """
-    owner = chain.coldkey_of(hotkey)
-    if owner is None:
+def _assert_sender(sender: str, expected_coldkey: str | None) -> None:
+    """The payment sender must be the coldkey that will sign the submission."""
+    if sender != expected_coldkey:
         raise CliError(
-            f"hotkey {hotkey} is not registered on chain, so no coldkey owns it",
-            hint="The validator will refuse any submission it signs. Register it first.",
-        )
-    if owner != coldkey:
-        raise CliError(
-            f"hotkey {hotkey} is owned by {owner}, not by {coldkey}",
-            hint="The validator requires the paying coldkey to own the submitting hotkey, so "
-            "this transfer could not fund that submission.",
+            f"payment sender {sender} does not match the archive's coldkey {expected_coldkey}",
+            hint="Use the wallet that built the archive, or rebuild with its coldkey address.",
         )
 
 
