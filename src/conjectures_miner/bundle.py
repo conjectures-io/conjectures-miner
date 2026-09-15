@@ -27,8 +27,10 @@ MANIFEST_NAME = "submission.json"
 PROOF_NAME = "Main.lean"
 ENTRY_NAMES = (MANIFEST_NAME, PROOF_NAME)
 
-MAX_BUNDLE_BYTES = 2 * 1024 * 1024
-MAX_PROOF_BYTES = 1_000_000
+# Match the validator's archive and proof byte limits; token policy is checked by
+# the validator, including the local checkout used by `conjectures verify`.
+MAX_BUNDLE_BYTES = 12 * 1024 * 1024
+MAX_PROOF_BYTES = 10 * 1024 * 1024
 
 TASK_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,254}$")
 # Exactly 48, matching the validator: a 47-character address is accepted by the API and then

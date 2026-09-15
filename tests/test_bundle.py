@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import random
 import struct
 import zipfile
 from pathlib import Path
 
 import pytest
-from tests.conftest import HOTKEY, PROOF, TASK_DIGEST, TASK_ID
 
 from conjectures_miner import bundle
 from conjectures_miner.digest import sha256_prefixed
+from tests.conftest import HOTKEY, PROOF, TASK_DIGEST, TASK_ID
 
 EOCD_SIGNATURE = b"PK\x05\x06"
 EOCD_SIZE = 22
@@ -111,6 +112,25 @@ def test_read_round_trips_what_was_written(tmp_path: Path):
     assert reread.raw == built.raw
     assert reread.manifest == built.manifest
     assert reread.sha256 == built.sha256
+
+
+def test_ten_mib_proof_round_trips_in_an_archive_above_the_old_limit(tmp_path: Path):
+    # Deterministic ASCII with enough entropy to exceed the old 2 MiB archive cap.
+    proof = random.Random(0).randbytes(5 * 1024 * 1024).hex().encode("ascii")
+    bundle.check_proof(proof)
+    manifest = bundle.build_manifest(
+        task_id=TASK_ID,
+        task_bundle_sha256=TASK_DIGEST,
+        hotkey_ss58=HOTKEY,
+        proof=proof,
+    )
+    path = tmp_path / "large.zip"
+    built = bundle.write(path, manifest=manifest, proof=proof)
+    assert len(built.raw) > 2 * 1024 * 1024
+    reread = bundle.read(path)
+    assert reread.proof == proof
+    assert reread.manifest["proof_bytes"] == 10 * 1024 * 1024
+    assert reread.proof_sha256 == sha256_prefixed(proof)
 
 
 def test_reading_something_that_is_not_a_bundle_is_a_refusal(tmp_path: Path):

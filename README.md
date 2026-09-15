@@ -142,6 +142,10 @@ A proof gets the same hour the validator allows it, and the run is quiet until L
 Re-running `--setup` on a host that already built once takes a couple of minutes: it moves the
 checkouts to the current revision and re-checks readiness rather than rebuilding.
 
+Proof files may be up to 10 MiB (10,485,760 bytes), with a 12 MiB archive limit. The validator
+also enforces a 1,000,000-token limit. If your local verifier still reports the old 200,000-token
+limit, run `conjectures verify --setup` to refresh it.
+
 Linux only, x86_64 or aarch64; on Windows, run it inside WSL2. On a stock Debian or Ubuntu host:
 
 ```bash
