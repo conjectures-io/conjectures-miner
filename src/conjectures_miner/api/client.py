@@ -144,6 +144,36 @@ class ApiClient:
         """
         self._send("POST", "/v1/auth/logout", headers=headers)
 
+    # --- chat logs: read the offer, upload with a session token ---------------------------
+
+    def chat_log_offer(self) -> models.ChatLogOffer:
+        return self._call("GET", "/v1/trajectory-offer", model=models.ChatLogOffer)
+
+    def deposit_chat_logs(
+        self,
+        *,
+        package: bytes,
+        headers: dict[str, str],
+        terms_version: str,
+        terms_sha256: str,
+        assent_statements_sha256: str,
+    ) -> models.ChatLogDeposit:
+        """Upload a package before its proof. The body is the zip; consent rides in the query."""
+        return self._call(
+            "POST",
+            "/v1/me/chat-log-deposits",
+            model=models.ChatLogDeposit,
+            content=package,
+            params={
+                "terms_version": terms_version,
+                "terms_sha256": terms_sha256,
+                "assent_statements_sha256": assent_statements_sha256,
+                "accepted": "true",
+            },
+            headers={"Content-Type": "application/zip", **headers},
+            timeout=self._upload_timeout,
+        )
+
     # --- the browser flow, used only by `auth register` -----------------------------------
     #
     # A cookie session, not a token, and this client is the browser for as long as one command

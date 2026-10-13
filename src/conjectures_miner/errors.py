@@ -72,6 +72,30 @@ ADVICE: Mapping[str, str] = {
     ),
     "RATE_LIMITED": "Too many requests. Wait out `Retry-After`, then retry with the same key.",
     "SUBMISSION_POLICY_VIOLATION": "The proof uses something the policy forbids; see the detail.",
+    "CHAT_LOG_REQUIRED": (
+        "Every open problem needs the AI chat logs that produced this proof, uploaded first. Run "
+        "`conjectures logs upload <package.zip>`, then submit again with the same payment -- it "
+        "was not spent."
+    ),
+    "CHAT_LOG_ACCOUNT_REQUIRED": (
+        "Chat logs are kept by the account your coldkey is linked to, and this one has none. Run "
+        "`conjectures auth register`, `conjectures auth login` and `conjectures logs upload "
+        "<package.zip>`, then submit again with the same payment -- it was not spent."
+    ),
+    "CHAT_LOG_REVIEW_UNAVAILABLE": (
+        "Chat-log review is closed, so no bounty is taking proofs right now. Nothing was spent."
+    ),
+    "TRAJECTORY_INVALID": (
+        "The chat-log package failed its checks; the detail names the files and lines. Fix them "
+        "as https://conjectures.io/trajectory/agent-instructions.md describes and upload again."
+    ),
+    "TRAJECTORY_TERMS_CHANGED": (
+        "The validator's chat-log terms changed. Upgrade conjectures-miner, read the new terms, "
+        "and upload again."
+    ),
+    "TRAJECTORY_ALREADY_SUBMITTED": (
+        "This proof was already submitted with its logs, and they cannot be replaced."
+    ),
 }
 
 
