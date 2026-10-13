@@ -263,3 +263,24 @@ class SubmissionPage(Model):
 
     items: tuple[SubmissionSummary, ...] = ()
     next_cursor: str | None = None
+
+
+class ChatLogOffer(Model):
+    """What the validator takes chat logs under: its terms, and the limits on a package."""
+
+    enabled: bool
+    terms_version: str
+    terms_sha256: str
+    assent_statements_sha256: str
+    deposit_hours: int
+    max_package_bytes: int
+
+
+class ChatLogDeposit(Model):
+    """Logs held for a proof that has not been submitted yet."""
+
+    id: uuid.UUID
+    status: str
+    package_sha256: str
+    terms_version: str
+    expires_at: datetime | None = None

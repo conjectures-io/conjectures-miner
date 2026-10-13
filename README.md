@@ -108,14 +108,29 @@ your wallet or a block explorer shows:
 conjectures pay reference --extrinsic 4821993-2 --plan submission.plan.json
 ```
 
-**9. Submit.** No `--payment-ref`: the plan already cites the payment. Signs the request and
+**9. Upload the chat logs.** Every open problem requires the AI chat logs that produced the
+proof, uploaded before the proof is submitted and accepted by a reviewer. Export them as a package
+following [the agent instructions](https://conjectures.io/trajectory/agent-instructions.md), then
+upload it from a CLI session (`conjectures auth register` once, then `conjectures auth login`):
+
+```bash
+conjectures logs upload chat-log-package.zip
+```
+
+The package must name the task and the exact proof the plan seals; `logs upload` checks that before
+sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v2.md) and
+asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours; once the proof is
+submitted the logs cannot be replaced. Without them `submit` is refused and the payment is not
+spent, so you can upload and submit again with the same payment.
+
+**10. Submit.** No `--payment-ref`: the plan already cites the payment. Signs the request and
 spends it, after showing what is about to be spent (`--yes` skips the prompt).
 
 ```bash
 conjectures submit
 ```
 
-**10. Watch it.** Verification is asynchronous; the report is the verifier's immutable record and
+**11. Watch it.** Verification is asynchronous; the report is the verifier's immutable record and
 appears once it finishes.
 
 ```bash

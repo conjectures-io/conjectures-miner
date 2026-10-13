@@ -16,6 +16,7 @@ from conjectures_miner import settings as settings_module
 from conjectures_miner.commands import (
     auth,
     config,
+    logs,
     pay,
     submissions,
     submit,
@@ -38,6 +39,7 @@ app.add_typer(tasks.app, name="tasks")
 app.add_typer(submissions.app, name="submissions")
 app.add_typer(config.app, name="config")
 app.add_typer(auth.app, name="auth")
+app.add_typer(logs.app, name="logs")
 # `pay` is both a command and a group: paying is the common case, and `pay reference` recovers a
 # transfer that was made but whose reference was lost. `invoke_without_command` is what lets one
 # name be both.
