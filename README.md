@@ -118,7 +118,7 @@ conjectures logs upload chat-log-package.zip
 ```
 
 The package must name the task and the exact proof the plan seals; `logs upload` checks that before
-sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v2.md) and
+sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v4.md) and
 asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours. Without them `submit`
 is refused and the payment is not spent, so you can upload and submit again with the same payment.
 
