@@ -94,7 +94,16 @@ ADVICE: Mapping[str, str] = {
         "and upload again."
     ),
     "TRAJECTORY_ALREADY_SUBMITTED": (
-        "This proof was already submitted with its logs, and they cannot be replaced."
+        "This proof was already submitted with its logs. A new version can be uploaded only when a "
+        "reviewer asks for one: `conjectures logs upload <package.zip> --submission <id>`."
+    ),
+    "TRAJECTORY_REVISION_NOT_REQUESTED": (
+        "A new version of these logs can be uploaded only after a reviewer asks for one, and at "
+        "most three versions in all."
+    ),
+    "TRAJECTORY_AFTER_THE_FACT": (
+        "The chat must show the final proof before it was submitted. Send the original chats, "
+        "not a recreation."
     ),
 }
 

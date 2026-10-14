@@ -174,6 +174,42 @@ class ApiClient:
             timeout=self._upload_timeout,
         )
 
+    def chat_log_state(self, submission_id: str, *, headers: dict[str, str]) -> models.ChatLogState:
+        return self._call(
+            "GET",
+            f"/v1/me/submissions/{submission_id}/trajectory",
+            model=models.ChatLogState,
+            headers=headers,
+        )
+
+    def revise_chat_logs(
+        self,
+        submission_id: str,
+        *,
+        package: bytes,
+        headers: dict[str, str],
+        expected_state_version: int,
+        terms_version: str,
+        terms_sha256: str,
+        assent_statements_sha256: str,
+    ) -> models.ChatLogDeposit:
+        """A new version of a submitted proof's logs, which a reviewer asked for."""
+        return self._call(
+            "POST",
+            f"/v1/me/submissions/{submission_id}/trajectory",
+            model=models.ChatLogDeposit,
+            content=package,
+            params={
+                "terms_version": terms_version,
+                "terms_sha256": terms_sha256,
+                "assent_statements_sha256": assent_statements_sha256,
+                "accepted": "true",
+                "expected_state_version": str(expected_state_version),
+            },
+            headers={"Content-Type": "application/zip", **headers},
+            timeout=self._upload_timeout,
+        )
+
     # --- the browser flow, used only by `auth register` -----------------------------------
     #
     # A cookie session, not a token, and this client is the browser for as long as one command
