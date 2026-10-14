@@ -156,3 +156,73 @@ def test_a_proof_refused_for_missing_logs_says_how_to_upload_and_that_nothing_wa
     hint = api_error(409, {"reason_code": reason, "detail": "logs"}).hint or ""
     assert "conjectures logs upload" in hint
     assert "not spent" in hint
+
+
+SUBMISSION = "4a10e8d3-544a-4726-a798-c07d2b0debb4"
+STATE = f"{API}/v1/me/submissions/{SUBMISSION}/trajectory"
+
+
+def state(*, eligible: bool, status: str = "NEEDS_CHANGES") -> dict:
+    return {
+        "eligible": eligible,
+        "eligibility_reason": None
+        if eligible
+        else "A new version can be uploaded only when asked.",
+        "chat_logs_required": True,
+        "claim": {
+            "id": "0b6c9c1e-63a4-4c41-9d0a-6a0fb1b8f5d1",
+            "status": status,
+            "package_sha256": "sha256:" + "b" * 64,
+            "terms_version": chat_logs.TERMS_VERSION,
+            "revision": 1,
+            "state_version": 4,
+            "review_note": "The chat that wrote Main.lean is missing.",
+        },
+    }
+
+
+def test_a_requested_new_version_goes_to_the_submission_with_its_state_version(
+    httpx_mock: HTTPXMock, tmp_path: Path, built: tuple[Path, Path]
+):
+    signed_in()
+    _, plan = built
+    httpx_mock.add_response(url=f"{API}/v1/trajectory-offer", json=offer())
+    httpx_mock.add_response(method="GET", url=STATE, json=state(eligible=True))
+    httpx_mock.add_response(
+        method="POST",
+        url=httpx.URL(STATE, params=CONSENT | {"expected_state_version": "4"}),
+        json=state(eligible=False, status="UNDER_REVIEW")["claim"] | {"revision": 2},
+    )
+    # The plan seals another proof; a revision is checked by the validator against the submission.
+    other = package(tmp_path, proof=b"theorem other : True := trivial\n")
+    result = invoke(
+        "logs", "upload", str(other), "--plan", str(plan), "--submission", SUBMISSION, "--yes"
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["revision"] == 2
+    sent = httpx_mock.get_requests()[-1]
+    assert sent.headers["Authorization"] == f"Bearer {TOKEN}"
+    assert sent.content == other.read_bytes()
+
+
+def test_a_new_version_nobody_asked_for_is_refused_before_the_prompt(
+    httpx_mock: HTTPXMock, tmp_path: Path
+):
+    signed_in()
+    httpx_mock.add_response(url=f"{API}/v1/trajectory-offer", json=offer())
+    httpx_mock.add_response(
+        method="GET", url=STATE, json=state(eligible=False, status="UNDER_REVIEW")
+    )
+    result = invoke("logs", "upload", str(package(tmp_path)), "--submission", SUBMISSION, "--yes")
+    assert isinstance(result.exception, CliError)
+    assert "only when asked" in str(result.exception)
+    assert [request.method for request in httpx_mock.get_requests()] == ["GET", "GET"]
+
+
+def test_status_shows_the_reviewers_request(httpx_mock: HTTPXMock):
+    signed_in()
+    httpx_mock.add_response(method="GET", url=STATE, json=state(eligible=True))
+    result = invoke("logs", "status", "--submission", SUBMISSION)
+    assert result.exit_code == 0, result.output
+    shown = json.loads(result.stdout)
+    assert shown["new_version_allowed"] and shown["review_note"].startswith("The chat that wrote")

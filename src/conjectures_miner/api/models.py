@@ -277,10 +277,22 @@ class ChatLogOffer(Model):
 
 
 class ChatLogDeposit(Model):
-    """Logs held for a proof that has not been submitted yet."""
+    """Logs held for a proof, before it is submitted or under review with it."""
 
     id: uuid.UUID
     status: str
     package_sha256: str
     terms_version: str
+    revision: int = 1
+    state_version: int = 1
+    review_note: str | None = None
     expires_at: datetime | None = None
+
+
+class ChatLogState(Model):
+    """A submitted proof's logs, and whether a new version may be uploaded now."""
+
+    eligible: bool
+    eligibility_reason: str | None = None
+    chat_logs_required: bool
+    claim: ChatLogDeposit | None = None

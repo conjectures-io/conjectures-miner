@@ -119,9 +119,13 @@ conjectures logs upload chat-log-package.zip
 
 The package must name the task and the exact proof the plan seals; `logs upload` checks that before
 sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v2.md) and
-asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours; once the proof is
-submitted the logs cannot be replaced. Without them `submit` is refused and the payment is not
-spent, so you can upload and submit again with the same payment.
+asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours. Without them `submit`
+is refused and the payment is not spent, so you can upload and submit again with the same payment.
+
+If a reviewer finds the logs incomplete they may ask for more instead of rejecting them.
+`conjectures logs status --submission <id>` shows the request and its note; upload a new version
+within 14 days with `conjectures logs upload <package.zip> --submission <id>`, up to three versions
+in all. Each must still be the original chats and show the proof before it was submitted.
 
 **10. Submit.** No `--payment-ref`: the plan already cites the payment. Signs the request and
 spends it, after showing what is about to be spent (`--yes` skips the prompt).
