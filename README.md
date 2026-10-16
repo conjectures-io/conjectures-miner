@@ -150,18 +150,19 @@ builds the validator's own, from source, on your machine.
 
 ```bash
 conjectures verify --setup                          # first run: ~5 GB down, ~20 GB, 30-60 minutes
-conjectures verify                                  # the sealed submission.zip. up to an hour
+conjectures verify                                  # the sealed submission.zip
 conjectures verify --proof Main.lean --task erdos89 # that proof instead, built or not
 conjectures verify --status                         # what it built, and whether it is still ready
 ```
 
-A proof gets the same hour the validator allows it, and the run is quiet until Lean finishes.
+A proof gets the timeout published in its task bundle, and the run is quiet until Lean finishes.
 Re-running `--setup` on a host that already built once takes a couple of minutes: it moves the
 checkouts to the current revision and re-checks readiness rather than rebuilding.
 
-Proof files may be up to 10 MiB (10,485,760 bytes), with a 12 MiB archive limit. The validator
-also enforces a 1,000,000-token limit. If your local verifier still reports the old 200,000-token
-limit, run `conjectures verify --setup` to refresh it.
+Proof files may be up to 30 MiB (31,457,280 bytes), with a 32 MiB archive limit. Each task's
+published `max_submission_bytes` still applies, and the validator also enforces a
+5,000,000-token limit. Update the CLI with `git pull --ff-only && ./install.sh`, and run
+`conjectures verify --setup` to refresh an older local verifier.
 
 Linux only, x86_64 or aarch64; on Windows, run it inside WSL2. On a stock Debian or Ubuntu host:
 

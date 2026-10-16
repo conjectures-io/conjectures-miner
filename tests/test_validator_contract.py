@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conjectures_miner import bundle, digest, signing
+from conjectures_miner import bundle, chat_logs, digest, signing
 from conjectures_miner.api import models
 from tests.conftest import HOTKEY, PROOF, TASK_DIGEST, TASK_ID
 from tests.test_auth import account_response, session_response, submission_page
@@ -31,7 +31,36 @@ def validator(monkeypatch: pytest.MonkeyPatch):
         schemas=importlib.import_module("submission_api.schemas"),
         account=importlib.import_module("submission_api.schemas_account"),
         submissions=importlib.import_module("conjectures_subnet.db.submissions"),
+        chat_log_terms=importlib.import_module("submission_api.trajectory_terms"),
     )
+
+
+def test_bundle_policy_matches_the_current_validator(validator):
+    assert bundle.MAX_PROOF_BYTES == validator.bundle.MAX_SUBMISSION_BYTES
+    assert bundle.MAX_BUNDLE_BYTES == validator.bundle.MAX_BUNDLE_BYTES
+    assert bundle.BUNDLE_SCHEMA_VERSION == validator.bundle.BUNDLE_SCHEMA_VERSION
+
+
+def test_chat_log_consent_matches_the_current_validator(validator):
+    assert chat_logs.TERMS_VERSION == validator.chat_log_terms.TERMS_VERSION
+    assert chat_logs.TERMS_SHA256 == validator.chat_log_terms.TERMS_SHA256
+    assert chat_logs.ASSENT_STATEMENTS_SHA256 == validator.chat_log_terms.ASSENT_STATEMENTS_SHA256
+
+
+def test_validator_reads_a_maximum_sized_uncompressed_cli_proof(validator, tmp_path: Path):
+    # Repetitive proof text is stored uncompressed, so this also exercises the archive cap.
+    proof = PROOF.ljust(validator.bundle.MAX_SUBMISSION_BYTES, b" ")
+    bundle.check_proof(proof)
+    manifest = bundle.build_manifest(
+        task_id=TASK_ID, task_bundle_sha256=TASK_DIGEST, coldkey_ss58=HOTKEY, proof=proof
+    )
+    path = tmp_path / "maximum.zip"
+    archive = bundle.write(path, manifest=manifest, proof=proof)
+    assert len(archive.raw) > len(proof)
+    assert bundle.read(path).proof == proof
+    admitted = validator.bundle.load_proof_bundle(archive.raw)
+    assert admitted.proof.raw == proof
+    assert admitted.manifest.proof_bytes == len(proof)
 
 
 @pytest.mark.parametrize("proof", [PROOF, b"x\n" * 300_000])
@@ -44,7 +73,7 @@ def test_validator_admits_cli_archives(validator, tmp_path: Path, proof: bytes):
         archive.raw,
         task_manifest=SimpleNamespace(
             task_id=TASK_ID,
-            max_submission_bytes=10 * 1024 * 1024,
+            max_submission_bytes=validator.bundle.MAX_SUBMISSION_BYTES,
             theorem_names=("Bounty.target",),
             forbidden_dependencies=(),
             answer_policy={},

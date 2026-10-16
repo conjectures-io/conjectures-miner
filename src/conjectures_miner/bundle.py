@@ -30,8 +30,8 @@ ENTRY_NAMES = (MANIFEST_NAME, PROOF_NAME)
 
 # Match the validator's archive and proof byte limits; token policy is checked by
 # the validator, including the local checkout used by `conjectures verify`.
-MAX_BUNDLE_BYTES = 12 * 1024 * 1024
-MAX_PROOF_BYTES = 10 * 1024 * 1024
+MAX_PROOF_BYTES = 30 * 1024 * 1024
+MAX_BUNDLE_BYTES = MAX_PROOF_BYTES + 2 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
 MAX_MANIFEST_BYTES = 16 * 1024
 

@@ -114,9 +114,12 @@ def test_read_round_trips_what_was_written(tmp_path: Path):
     assert reread.sha256 == built.sha256
 
 
-def test_ten_mib_proof_round_trips_in_an_archive_above_the_old_limit(tmp_path: Path):
-    # Deterministic ASCII with enough entropy to exceed the old 2 MiB archive cap.
-    proof = random.Random(0).randbytes(5 * 1024 * 1024).hex().encode("ascii")
+@pytest.mark.parametrize(("proof_mib", "old_archive_mib"), [(10, 2), (30, 12)])
+def test_large_proof_round_trips_in_an_archive_above_the_old_limit(
+    tmp_path: Path, proof_mib: int, old_archive_mib: int
+):
+    # Deterministic ASCII with enough entropy to exceed the previous archive caps.
+    proof = random.Random(0).randbytes(proof_mib * 1024 * 1024 // 2).hex().encode("ascii")
     bundle.check_proof(proof)
     manifest = bundle.build_manifest(
         task_id=TASK_ID,
@@ -126,10 +129,10 @@ def test_ten_mib_proof_round_trips_in_an_archive_above_the_old_limit(tmp_path: P
     )
     path = tmp_path / "large.zip"
     built = bundle.write(path, manifest=manifest, proof=proof)
-    assert len(built.raw) > 2 * 1024 * 1024
+    assert len(built.raw) > old_archive_mib * 1024 * 1024
     reread = bundle.read(path)
     assert reread.proof == proof
-    assert reread.manifest["proof_bytes"] == 10 * 1024 * 1024
+    assert reread.manifest["proof_bytes"] == proof_mib * 1024 * 1024
     assert reread.proof_sha256 == sha256_prefixed(proof)
 
 
