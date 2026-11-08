@@ -101,6 +101,8 @@ def test_upload_sends_the_package_with_the_pinned_consent(
     assert sent.headers["Authorization"] == f"Bearer {TOKEN}"
     assert sent.headers["Content-Type"] == "application/zip"
     assert sent.content == logs.read_bytes()
+    assert chat_logs.TERMS_URL in result.stderr
+    assert chat_logs.ASSENT in result.stderr
     assert TOKEN not in result.output
 
 
@@ -110,11 +112,23 @@ def test_upload_needs_a_session_before_anything_is_read(httpx_mock: HTTPXMock, t
     assert httpx_mock.get_requests() == []
 
 
-def test_upload_refuses_terms_this_tool_has_not_shown(httpx_mock: HTTPXMock, tmp_path: Path):
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"terms_version": "chat-log-terms-v4"},
+        {"terms_version": "chat-log-terms-v6"},
+        {"terms_sha256": "sha256:" + "c" * 64},
+        {"assent_statements_sha256": "sha256:" + "c" * 64},
+    ],
+    ids=["older-terms", "newer-terms", "changed-terms-text", "changed-assent-text"],
+)
+def test_upload_refuses_terms_this_tool_has_not_shown(
+    httpx_mock: HTTPXMock, tmp_path: Path, changes: dict[str, str]
+):
     signed_in()
     httpx_mock.add_response(
         url=f"{API}/v1/trajectory-offer",
-        json=offer(terms_version="chat-log-terms-v3", terms_sha256="sha256:" + "c" * 64),
+        json=offer(**changes),
     )
     result = invoke("logs", "upload", str(package(tmp_path)), "--yes")
     assert isinstance(result.exception, CliError)

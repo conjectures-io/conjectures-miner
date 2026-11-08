@@ -27,6 +27,7 @@ def validator(monkeypatch: pytest.MonkeyPatch):
         pytest.skip("set CONJECTURES_VALIDATOR_ROOT to run the validator contract tests")
     monkeypatch.syspath_prepend(root)
     return SimpleNamespace(
+        root=Path(root),
         bundle=importlib.import_module("verifier.bundle"),
         schemas=importlib.import_module("submission_api.schemas"),
         account=importlib.import_module("submission_api.schemas_account"),
@@ -45,6 +46,11 @@ def test_chat_log_consent_matches_the_current_validator(validator):
     assert chat_logs.TERMS_VERSION == validator.chat_log_terms.TERMS_VERSION
     assert chat_logs.TERMS_SHA256 == validator.chat_log_terms.TERMS_SHA256
     assert chat_logs.ASSENT_STATEMENTS_SHA256 == validator.chat_log_terms.ASSENT_STATEMENTS_SHA256
+    policies = validator.root / "docs" / "trajectories"
+    terms_file = f"{validator.chat_log_terms.TERMS_VERSION}.md"
+    assert digest.sha256_prefixed((policies / terms_file).read_bytes()) == chat_logs.TERMS_SHA256
+    assert f"https://conjectures.io/trajectory/{terms_file}" == chat_logs.TERMS_URL
+    assert (policies / "assent-statements-v2.json").read_bytes() == chat_logs.ASSENT_STATEMENTS
 
 
 def test_validator_reads_a_maximum_sized_uncompressed_cli_proof(validator, tmp_path: Path):

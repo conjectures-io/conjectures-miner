@@ -13,6 +13,17 @@ With `uv` it installs as a tool; without it, into a private virtualenv linked fr
 `~/.local/bin` -- so Python 3.12 or newer is the only requirement. Either way it finishes by
 installing Tab completion for your shell. `PREFIX=/somewhere ./install.sh` puts it elsewhere.
 
+To upgrade an existing checkout on `main`:
+
+```bash
+git pull --ff-only
+./install.sh
+conjectures --version
+```
+
+Version 0.2.2 supports `chat-log-terms-v5`. If `logs upload` reports that the validator requires
+v5 but your CLI shows v4, upgrade and retry the upload with the same package and submission plan.
+
 ## Your first submission
 
 **1. Point it at a validator.**
@@ -118,7 +129,7 @@ conjectures logs upload chat-log-package.zip
 ```
 
 The package must name the task and the exact proof the plan seals; `logs upload` checks that before
-sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v4.md) and
+sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v5.md) and
 asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours. Without them `submit`
 is refused and the payment is not spent, so you can upload and submit again with the same payment.
 
