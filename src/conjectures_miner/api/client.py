@@ -6,6 +6,8 @@ idempotency key, which is why the key is resolved and persisted before the first
 
 from __future__ import annotations
 
+import time
+from contextlib import suppress
 from types import TracebackType
 from typing import Any, Self
 
@@ -14,8 +16,10 @@ from pydantic import ValidationError
 
 from conjectures_miner.api import models
 from conjectures_miner.bundle import BUNDLE_MEDIA_TYPE
-from conjectures_miner.errors import CliError, TransportError, api_error
+from conjectures_miner.errors import ApiError, CliError, TransportError, api_error
 from conjectures_miner.settings import Settings
+
+CHAT_LOG_CHUNK_BYTES = 8 * 1024 * 1024
 
 
 class ApiClient:
@@ -158,20 +162,17 @@ class ApiClient:
         terms_sha256: str,
         assent_statements_sha256: str,
     ) -> models.ChatLogDeposit:
-        """Upload a package before its proof. The body is the zip; consent rides in the query."""
-        return self._call(
-            "POST",
+        """Upload a package before its proof, staging large ZIPs in small requests."""
+        return self._upload_chat_logs(
             "/v1/me/chat-log-deposits",
-            model=models.ChatLogDeposit,
-            content=package,
+            package=package,
             params={
                 "terms_version": terms_version,
                 "terms_sha256": terms_sha256,
                 "assent_statements_sha256": assent_statements_sha256,
                 "accepted": "true",
             },
-            headers={"Content-Type": "application/zip", **headers},
-            timeout=self._upload_timeout,
+            headers=headers,
         )
 
     def chat_log_state(self, submission_id: str, *, headers: dict[str, str]) -> models.ChatLogState:
@@ -194,11 +195,9 @@ class ApiClient:
         assent_statements_sha256: str,
     ) -> models.ChatLogDeposit:
         """A new version of a submitted proof's logs, which a reviewer asked for."""
-        return self._call(
-            "POST",
+        return self._upload_chat_logs(
             f"/v1/me/submissions/{submission_id}/trajectory",
-            model=models.ChatLogDeposit,
-            content=package,
+            package=package,
             params={
                 "terms_version": terms_version,
                 "terms_sha256": terms_sha256,
@@ -206,9 +205,109 @@ class ApiClient:
                 "accepted": "true",
                 "expected_state_version": str(expected_state_version),
             },
-            headers={"Content-Type": "application/zip", **headers},
-            timeout=self._upload_timeout,
+            headers=headers,
         )
+
+    def _upload_chat_logs(
+        self, path: str, *, package: bytes, params: dict[str, str], headers: dict[str, str]
+    ) -> models.ChatLogDeposit:
+        headers = {"Content-Type": "application/zip", **headers}
+        if len(package) <= CHAT_LOG_CHUNK_BYTES:
+            return self._upload_call(
+                "POST",
+                path,
+                model=models.ChatLogDeposit,
+                content=package,
+                params=params,
+                headers=headers,
+            )
+
+        # The package limit is larger than the proxy's per-request limit.
+        staged = self._upload_call(
+            "POST",
+            "/v1/me/chat-log-uploads",
+            model=models.ChatLogUpload,
+            params={**params, "byte_length": str(len(package)), "keepalive": "true"},
+            headers=headers,
+        )
+        part_path = f"/v1/me/chat-log-uploads/{staged.id}"
+        try:
+            if not 1 <= staged.chunk_bytes <= CHAT_LOG_CHUNK_BYTES:
+                raise CliError("the validator returned an invalid chat-log upload part size")
+            for offset in range(0, len(package), staged.chunk_bytes):
+                part = package[offset : offset + staged.chunk_bytes]
+                received = self._upload_call(
+                    "PUT",
+                    part_path,
+                    model=models.ChatLogUploadPart,
+                    content=part,
+                    params={"offset": str(offset)},
+                    headers=headers,
+                )
+                if received.received_bytes != offset + len(part):
+                    raise CliError("the validator did not acknowledge the complete upload part")
+            return self._upload_call(
+                "POST",
+                path,
+                model=models.ChatLogDeposit,
+                content=b"",
+                params={**params, "upload_id": str(staged.id), "keepalive": "true"},
+                headers=headers,
+            )
+        finally:
+            # Intake removes successful uploads; also discard any abandoned private parts.
+            with suppress(CliError):  # Expiry or the next upload also removes temporary parts.
+                self._send("DELETE", part_path, headers=headers, timeout=self._upload_timeout)
+
+    def _upload_call[T: models.Model](
+        self,
+        method: str,
+        path: str,
+        *,
+        model: type[T],
+        params: dict[str, str],
+        headers: dict[str, str],
+        content: bytes | None = None,
+    ) -> T:
+        for attempt in range(4):
+            try:
+                response = self._send(
+                    method,
+                    path,
+                    content=content,
+                    params=params,
+                    headers=headers,
+                    timeout=self._upload_timeout,
+                )
+                body = _body(response)
+                # Long operations send whitespace heartbeats, then a result or error envelope.
+                if isinstance(body, dict):
+                    if "error" in body:
+                        error = body["error"]
+                        status = error.get("status") if isinstance(error, dict) else None
+                        if type(status) is not int or not 400 <= status <= 599:
+                            raise CliError("the validator returned an invalid upload error")
+                        raise api_error(status, error, response.headers.get("retry-after"))
+                    if "result" in body:
+                        body = body["result"]
+                return _validate(body, model, path)
+            except (ApiError, TransportError) as error:
+                limited = isinstance(error, ApiError) and error.status_code == 429
+                interrupted_part = method == "PUT" and (
+                    isinstance(error, TransportError)
+                    or error.status_code == 408
+                    or error.status_code >= 500
+                )
+                # Only PUT parts are safe to replay after an ambiguous network failure.
+                if attempt == 3 or not (limited or interrupted_part):
+                    raise
+                delay = error.retry_after if isinstance(error, ApiError) else None
+                if delay is None and isinstance(error, ApiError):
+                    delay = error.detail.get("retry_after_seconds")
+                if not isinstance(delay, (int, float)):
+                    delay = 60 if limited else 2**attempt
+                time.sleep(max(1, min(300, delay)))
+        raise AssertionError("upload retries exhausted without a result")
 
     # --- the browser flow, used only by `auth register` -----------------------------------
     #
@@ -316,13 +415,17 @@ class ApiClient:
             headers=headers,
             timeout=timeout,
         )
-        try:
-            return model.model_validate(_body(response))
-        except ValidationError as exc:
-            raise CliError(
-                f"the validator answered {path} in a shape this CLI does not understand",
-                hint=f"Upgrade conjectures-miner. It could not read {_unreadable(exc)}.",
-            ) from exc
+        return _validate(_body(response), model, path)
+
+
+def _validate[T: models.Model](body: Any, model: type[T], path: str) -> T:
+    try:
+        return model.model_validate(body)
+    except ValidationError as exc:
+        raise CliError(
+            f"the validator answered {path} in a shape this CLI does not understand",
+            hint=f"Upgrade conjectures-miner. It could not read {_unreadable(exc)}.",
+        ) from exc
 
 
 def _unreadable(exc: ValidationError) -> str:

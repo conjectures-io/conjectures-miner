@@ -128,6 +128,10 @@ upload it from a CLI session (`conjectures auth register` once, then `conjecture
 conjectures logs upload chat-log-package.zip
 ```
 
+Version 0.2.3 and later automatically send packages larger than 8 MiB in small requests, so
+large ZIPs do not hit the public proxy's HTTP 413 request-size limit. Keep the package as one
+ZIP; the server reassembles its original bytes. Interrupted parts are retried automatically.
+
 The package must name the task and the exact proof the plan seals; `logs upload` checks that before
 sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v5.md) and
 asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours. Without them `submit`

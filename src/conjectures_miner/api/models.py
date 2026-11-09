@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 TERMINAL_VERIFICATION = frozenset({"VERIFIED", "REJECTED"})
 
@@ -287,6 +287,15 @@ class ChatLogDeposit(Model):
     state_version: int = 1
     review_note: str | None = None
     expires_at: datetime | None = None
+
+
+class ChatLogUpload(Model):
+    id: uuid.UUID
+    chunk_bytes: int = Field(strict=True)
+
+
+class ChatLogUploadPart(Model):
+    received_bytes: int = Field(strict=True, ge=0)
 
 
 class ChatLogState(Model):
