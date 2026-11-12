@@ -15,9 +15,9 @@ from dataclasses import dataclass
 
 from conjectures_miner.errors import CliError
 
-TERMS_VERSION = "chat-log-terms-v5"
-TERMS_SHA256 = "sha256:5e3571b96a24442f05cdae65d78761ff3a96f0570272f75a67dde6b544a9ca15"
-TERMS_URL = "https://conjectures.io/trajectory/chat-log-terms-v5.md"
+TERMS_VERSION = "chat-log-terms-v6"
+TERMS_SHA256 = "sha256:0a83726b8f1119bb26a1a14ba3a934f90dd3fcf57f42f9720beb6dfdcd30c8ac"
+TERMS_URL = "https://conjectures.io/trajectory/chat-log-terms-v6.md"
 INSTRUCTIONS_URL = "https://conjectures.io/trajectory/agent-instructions.md"
 
 # The validator's `assent-statements-v2.json`, byte for byte: its digest is what consent cites.

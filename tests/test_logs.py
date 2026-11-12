@@ -115,8 +115,8 @@ def test_upload_needs_a_session_before_anything_is_read(httpx_mock: HTTPXMock, t
 @pytest.mark.parametrize(
     "changes",
     [
-        {"terms_version": "chat-log-terms-v4"},
-        {"terms_version": "chat-log-terms-v6"},
+        {"terms_version": "chat-log-terms-v5"},
+        {"terms_version": "chat-log-terms-v7"},
         {"terms_sha256": "sha256:" + "c" * 64},
         {"assent_statements_sha256": "sha256:" + "c" * 64},
     ],
@@ -191,6 +191,7 @@ def state(*, eligible: bool, status: str = "NEEDS_CHANGES") -> dict:
             "revision": 1,
             "state_version": 4,
             "review_note": "The chat that wrote Main.lean is missing.",
+            "expires_at": None,
         },
     }
 
@@ -240,3 +241,5 @@ def test_status_shows_the_reviewers_request(httpx_mock: HTTPXMock):
     assert result.exit_code == 0, result.output
     shown = json.loads(result.stdout)
     assert shown["new_version_allowed"] and shown["review_note"].startswith("The chat that wrote")
+    assert "no deadline" in result.stderr
+    assert "14 days" not in result.stderr
