@@ -179,6 +179,6 @@ def status(
     )
     if state.eligible and state.chat_logs_required:
         app_ctx.render.note(
-            "A reviewer asked for more. Upload a new version within 14 days: "
+            "A reviewer asked for more. Upload a new version with no deadline: "
             f"`conjectures logs upload <package.zip> --submission {submission}`."
         )

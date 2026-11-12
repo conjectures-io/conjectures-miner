@@ -21,8 +21,9 @@ git pull --ff-only
 conjectures --version
 ```
 
-Version 0.2.2 supports `chat-log-terms-v5`. If `logs upload` reports that the validator requires
-v5 but your CLI shows v4, upgrade and retry the upload with the same package and submission plan.
+Version 0.2.4 supports `chat-log-terms-v6`, with no chat-log claim or correction deadline.
+If `logs upload` reports newer terms than your CLI shows, upgrade and retry with the same
+package and submission plan.
 
 ## Your first submission
 
@@ -133,13 +134,13 @@ large ZIPs do not hit the public proxy's HTTP 413 request-size limit. Keep the p
 ZIP; the server reassembles its original bytes. Interrupted parts are retried automatically.
 
 The package must name the task and the exact proof the plan seals; `logs upload` checks that before
-sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v5.md) and
+sending. It shows the [chat-log terms](https://conjectures.io/trajectory/chat-log-terms-v6.md) and
 asks you to agree (`--yes` agrees without the prompt). Submit within 24 hours. Without them `submit`
 is refused and the payment is not spent, so you can upload and submit again with the same payment.
 
 If a reviewer finds the logs incomplete they may ask for more instead of rejecting them.
 `conjectures logs status --submission <id>` shows the request and its note; upload a new version
-within 14 days with `conjectures logs upload <package.zip> --submission <id>`, up to three versions
+with no deadline using `conjectures logs upload <package.zip> --submission <id>`, up to three versions
 in all. Each must still be the original chats and show the proof before it was submitted.
 
 **10. Submit.** No `--payment-ref`: the plan already cites the payment. Signs the request and
